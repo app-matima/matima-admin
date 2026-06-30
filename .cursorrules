@@ -1,0 +1,76 @@
+# MATIMA ADMIN — Règles Cursor
+
+## Contexte projet
+Interface d'administration interne pour l'équipe Matima.
+Permet de gérer les prestations, suivre les demandes des MJPM, et administrer la plateforme.
+Accès réservé à l'équipe Matima uniquement — jamais accessible aux MJPM.
+
+## Stack technique — ne jamais dévier
+- Next.js 14 (App Router uniquement)
+- TypeScript strict (jamais de "any")
+- Supabase (même base que matima-app)
+- Tailwind CSS
+- Shadcn/ui
+- Resend
+- Vercel
+
+## Différences avec matima-app
+- Interface 100% responsive — optimisée mobile en priorité
+- Pas de sidebar fixe sur mobile — navigation par bottom bar
+- Accès à TOUTES les organisations (pas de filtre organisation_id)
+- Rôle admin uniquement — pas de rôle MJPM ou assistant
+
+## Design system — identique à matima-app
+### Couleurs
+Sidebar/Header : #0F1923
+Accent :        #00A394
+Accent hover :  #00C4B3
+Fond page :     #F4F5F7
+Cards :         #FFFFFF
+Bordures :      #E5E7EB
+Texte fort :    #0F1923
+Texte doux :    #6B7280
+
+### Responsive — priorité mobile
+- Breakpoints : mobile first (default), md: tablette, lg: desktop
+- Bottom navigation bar sur mobile avec 4-5 items max
+- Cards pleine largeur sur mobile
+- Tableaux remplacés par des cards sur mobile
+- Boutons full width sur mobile
+
+## Structure des fichiers
+/app
+  /dashboard     → vue globale toutes organisations
+  /prestations   → gestion des demandes de prestations
+  /mjpms         → liste des cabinets clients
+  /auth          → connexion admin
+/components
+  /layout        → header, bottom-nav, sidebar desktop
+  /prestations   → composants gestion prestations
+  /shared        → composants réutilisables
+/lib
+  /supabase      → client Supabase (service role pour accès total)
+  /utils
+
+## Tables Supabase utilisées
+prestations_commandes → toutes les demandes de toutes les organisations
+majeurs               → tous les protégés
+organisations         → tous les cabinets
+utilisateurs          → tous les MJPM
+alertes               → toutes les alertes
+
+## Navigation mobile (bottom bar)
+- Dashboard
+- Prestations
+- Clients (MJPM)
+- Paramètres
+
+## Sécurité
+- Auth Supabase avec vérification rôle admin
+- Utiliser service_role key pour bypasser RLS
+- Jamais exposer les données d'une organisation à une autre
+
+## Ce qu'on NE fait PAS
+- Interface protégé (c'est matima-app)
+- GED (c'est matima-app)
+- Coffre-fort (c'est matima-app)
