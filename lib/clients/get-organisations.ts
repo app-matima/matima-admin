@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import type { Plan } from "@/lib/clients/plans";
 import type {
   ClientDetail,
   ClientListItem,
@@ -7,9 +8,20 @@ import type {
   ProtegesParStatut,
 } from "@/types/clients";
 
+const ORGANISATION_SELECT =
+  "id, created_at, plan_id, plans!left(id, nom, prix_par_dossier)";
+
 interface OrganisationRow {
   id: string;
   created_at: string;
+  plan_id: string | null;
+  plans: PlanRow | PlanRow[] | null;
+}
+
+interface PlanRow {
+  id: string;
+  nom: string;
+  prix_par_dossier: number;
 }
 
 interface MajeurRow {
@@ -21,6 +33,22 @@ interface UtilisateurRow {
   id: string;
   organisation_id: string;
   role: string;
+}
+
+function resolvePlan(
+  planId: string | null,
+  plans: PlanRow | PlanRow[] | null,
+): Plan | null {
+  if (!planId || !plans) {
+    return null;
+  }
+
+  const data = Array.isArray(plans) ? plans[0] : plans;
+  if (!data?.id) {
+    return null;
+  }
+
+  return data;
 }
 
 async function enrichMjpmProfile(userId: string): Promise<MjpmProfile> {
@@ -70,13 +98,29 @@ function incrementProtegeStatut(
   if (statut === "decede") counts.decede += 1;
 }
 
+export async function getAllPlans(): Promise<Plan[]> {
+  const supabase = createAdminClient();
+
+  const { data, error } = await supabase
+    .from("plans")
+    .select("id, nom, prix_par_dossier")
+    .order("prix_par_dossier", { ascending: true });
+
+  if (error) {
+    console.error("getAllPlans", error);
+    return [];
+  }
+
+  return (data ?? []) as Plan[];
+}
+
 export async function getAllClients(): Promise<ClientListItem[]> {
   const supabase = createAdminClient();
 
   const [organisationsResult, majeursResult, mjpmResult] = await Promise.all([
     supabase
       .from("organisations")
-      .select("id, created_at")
+      .select(ORGANISATION_SELECT)
       .order("created_at", { ascending: false }),
     supabase.from("majeurs").select("organisation_id, statut"),
     supabase
@@ -115,12 +159,18 @@ export async function getAllClients(): Promise<ClientListItem[]> {
     }
   }
 
-  return organisations.map((organisation) => ({
-    organisationId: organisation.id,
-    mjpm: mjpmProfiles.get(organisation.id) ?? null,
-    created_at: organisation.created_at,
-    protegesActifs: protegesActifsParOrg.get(organisation.id) ?? 0,
-  }));
+  return organisations.map((organisation) => {
+    const plan = resolvePlan(organisation.plan_id, organisation.plans);
+
+    return {
+      organisationId: organisation.id,
+      mjpm: mjpmProfiles.get(organisation.id) ?? null,
+      created_at: organisation.created_at,
+      protegesActifs: protegesActifsParOrg.get(organisation.id) ?? 0,
+      plan,
+      plan_id: organisation.plan_id,
+    };
+  });
 }
 
 export async function getClientDetail(
@@ -136,7 +186,7 @@ export async function getClientDetail(
   ] = await Promise.all([
     supabase
       .from("organisations")
-      .select("id, created_at")
+      .select(ORGANISATION_SELECT)
       .eq("id", organisationId)
       .single(),
     supabase
@@ -167,6 +217,7 @@ export async function getClientDetail(
 
   const organisation = organisationResult.data as OrganisationRow;
   const majeurs = (majeursResult.data ?? []) as { statut: string }[];
+  const plan = resolvePlan(organisation.plan_id, organisation.plans);
 
   const protegesParStatut = emptyProtegesParStatut();
   for (const majeur of majeurs) {
@@ -182,6 +233,9 @@ export async function getClientDetail(
     organisationId: organisation.id,
     mjpm,
     created_at: organisation.created_at,
+    plan,
+    plan_id: organisation.plan_id,
+    dossiersActifs: protegesParStatut.actif,
     protegesParStatut,
     dernieresPrestations:
       (prestationsResult.data as ClientPrestationItem[] | null) ?? [],

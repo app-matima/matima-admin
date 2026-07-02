@@ -3,7 +3,9 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
+import { PlanSelect } from "@/components/clients/plan-select";
 import { fetchClientDetail } from "@/lib/clients/actions";
+import { formatPlanLabel } from "@/lib/clients/plans";
 import {
   getMjpmNomComplet,
   getStatutMajeurBadgeVariant,
@@ -17,13 +19,19 @@ import {
 import { formatDateAffichage } from "@/lib/utils/date";
 import { statutsMajeurModal } from "@/types/clients";
 import type { ClientListItem } from "@/types/clients";
+import type { Plan } from "@/lib/clients/plans";
 
 interface ClientDetailModalProps {
   client: ClientListItem | null;
+  plans: Plan[];
   onClose: () => void;
 }
 
-export function ClientDetailModal({ client, onClose }: ClientDetailModalProps) {
+export function ClientDetailModal({
+  client,
+  plans,
+  onClose,
+}: ClientDetailModalProps) {
   const [loading, setLoading] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
   const [detail, setDetail] = useState<
@@ -84,6 +92,16 @@ export function ClientDetailModal({ client, onClose }: ClientDetailModalProps) {
   }
 
   const mjpm = detail?.mjpm ?? client.mjpm;
+  const plan = detail?.plan ?? client.plan;
+  const planId = detail?.plan_id ?? client.plan_id;
+
+  function handlePlanUpdated(newPlan: Plan) {
+    setDetail((current) =>
+      current
+        ? { ...current, plan: newPlan, plan_id: newPlan.id }
+        : current,
+    );
+  }
 
   return (
     <div
@@ -138,6 +156,28 @@ export function ClientDetailModal({ client, onClose }: ClientDetailModalProps) {
             </div>
           ) : detail ? (
             <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-border bg-page p-4">
+                  <p className="mb-1 text-xs text-text-muted">Dossiers actifs</p>
+                  <p className="text-2xl font-medium text-text-strong">
+                    {detail.dossiersActifs}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-border bg-page p-4">
+                  <p className="mb-1 text-xs text-text-muted">Plan actuel</p>
+                  <Badge variant="info">
+                    {formatPlanLabel(plan, planId)}
+                  </Badge>
+                </div>
+              </div>
+
+              <PlanSelect
+                organisationId={detail.organisationId}
+                planId={planId}
+                plans={plans}
+                onPlanUpdated={handlePlanUpdated}
+              />
+
               <section className="grid grid-cols-3 gap-3">
                 {statutsMajeurModal.map((statut) => (
                   <div

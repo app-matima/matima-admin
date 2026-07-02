@@ -1,12 +1,17 @@
 import { Building2 } from "lucide-react";
 import { ClientsList } from "@/components/clients/clients-list";
 import type { ClientListItem } from "@/types/clients";
+import type { Plan } from "@/lib/clients/plans";
 
 interface ClientsPageContentProps {
   clients: ClientListItem[];
+  plans: Plan[];
 }
 
-export function ClientsPageContent({ clients }: ClientsPageContentProps) {
+export function ClientsPageContent({
+  clients,
+  plans,
+}: ClientsPageContentProps) {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-medium tracking-tight text-text-strong">
@@ -28,7 +33,7 @@ export function ClientsPageContent({ clients }: ClientsPageContentProps) {
           </div>
         </div>
       ) : (
-        <ClientsList clients={clients} />
+        <ClientsList clients={clients} plans={plans} />
       )}
     </div>
   );

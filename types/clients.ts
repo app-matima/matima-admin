@@ -1,4 +1,7 @@
 import type { StatutPrestation } from "@/types";
+import type { Plan } from "@/lib/clients/plans";
+
+export type { Plan };
 
 export interface MjpmProfile {
   id: string;
@@ -12,6 +15,8 @@ export interface ClientListItem {
   mjpm: MjpmProfile | null;
   created_at: string;
   protegesActifs: number;
+  plan: Plan | null;
+  plan_id: string | null;
 }
 
 export interface ProtegesParStatut {
@@ -35,6 +40,9 @@ export interface ClientDetail {
   organisationId: string;
   mjpm: MjpmProfile | null;
   created_at: string;
+  plan: Plan | null;
+  plan_id: string | null;
+  dossiersActifs: number;
   protegesParStatut: ProtegesParStatut;
   dernieresPrestations: ClientPrestationItem[];
 }
