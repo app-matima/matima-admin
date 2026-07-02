@@ -2,30 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  LayoutDashboard,
-  ClipboardList,
-  CalendarDays,
-  Users,
-  ContactRound,
-  Settings,
-  LogOut,
-} from "lucide-react";
+import { LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getNavItemsForRole } from "@/lib/navigation/admin-nav-items";
+import type { AdminUser } from "@/types/admin";
 import { useSignOut } from "./use-sign-out";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/prestations", label: "Prestations", icon: ClipboardList },
-  { href: "/planning", label: "Planning", icon: CalendarDays },
-  { href: "/mjpms", label: "Clients", icon: Users },
-  { href: "/contacts", label: "Contacts", icon: ContactRound },
-  { href: "/parametres", label: "Paramètres", icon: Settings },
-];
+interface SidebarProps {
+  currentUser: AdminUser;
+}
 
-export function Sidebar() {
+export function Sidebar({ currentUser }: SidebarProps) {
   const pathname = usePathname();
   const signOut = useSignOut();
+  const navItems = getNavItemsForRole(currentUser.role);
 
   return (
     <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 bg-sidebar">

@@ -2,30 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  LayoutDashboard,
-  ClipboardList,
-  CalendarDays,
-  Users,
-  ContactRound,
-  Settings,
-  LogOut,
-} from "lucide-react";
+import { LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getNavItemsForRole } from "@/lib/navigation/admin-nav-items";
+import type { AdminUser } from "@/types/admin";
 import { useSignOut } from "./use-sign-out";
 
-const navItems = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/prestations", label: "Prestations", icon: ClipboardList },
-  { href: "/planning", label: "Planning", icon: CalendarDays },
-  { href: "/mjpms", label: "Clients", icon: Users },
-  { href: "/contacts", label: "Contacts", icon: ContactRound },
-  { href: "/parametres", label: "Paramètres", icon: Settings },
-];
+interface BottomNavProps {
+  currentUser: AdminUser;
+}
 
-export function BottomNav() {
+export function BottomNav({ currentUser }: BottomNavProps) {
   const pathname = usePathname();
   const signOut = useSignOut();
+  const navItems = getNavItemsForRole(currentUser.role);
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 flex h-16 items-center justify-around border-t border-border bg-white">

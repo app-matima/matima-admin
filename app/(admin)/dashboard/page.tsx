@@ -1,11 +1,19 @@
+import { redirect } from "next/navigation";
 import { DernieresPrestations } from "@/components/dashboard/dernieres-prestations";
 import { MetricCards } from "@/components/dashboard/metric-cards";
 import { NouveauxClients } from "@/components/dashboard/nouveaux-clients";
+import { getCurrentAdminUser } from "@/lib/admin/get-current-admin-user";
 import { getDashboardData } from "@/lib/dashboard/get-dashboard-data";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
+  const currentUser = await getCurrentAdminUser();
+
+  if (currentUser?.role === "prestataire") {
+    redirect("/planning");
+  }
+
   const { metrics, dernieresPrestations, nouveauxClients } =
     await getDashboardData();
 

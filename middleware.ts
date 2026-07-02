@@ -1,5 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
+import { isPrestataireRestrictedPath } from "@/lib/navigation/admin-nav-items";
+import type { AdminRole } from "@/types/admin";
 
 const PUBLIC_AUTH_ROUTES = ["/auth/login", "/auth/accept-invite"];
 
@@ -11,6 +14,37 @@ function isPublicRoute(pathname: string): boolean {
   }
 
   return PUBLIC_API_ROUTES.includes(pathname);
+}
+
+async function getAdminUserRole(userId: string): Promise<AdminRole | null> {
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+
+  if (!serviceKey) {
+    return null;
+  }
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    serviceKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    },
+  );
+
+  const { data, error } = await supabase
+    .from("admin_users")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error || !data?.role) {
+    return null;
+  }
+
+  return data.role as AdminRole;
 }
 
 export async function middleware(request: NextRequest) {
@@ -50,10 +84,20 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && pathname === "/auth/login") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    return NextResponse.redirect(url);
+  if (user) {
+    const role = await getAdminUserRole(user.id);
+
+    if (pathname === "/auth/login") {
+      const url = request.nextUrl.clone();
+      url.pathname = role === "prestataire" ? "/planning" : "/dashboard";
+      return NextResponse.redirect(url);
+    }
+
+    if (role === "prestataire" && isPrestataireRestrictedPath(pathname)) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/planning";
+      return NextResponse.redirect(url);
+    }
   }
 
   return supabaseResponse;
