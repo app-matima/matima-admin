@@ -1,6 +1,18 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const PUBLIC_AUTH_ROUTES = ["/auth/login", "/auth/accept-invite"];
+
+const PUBLIC_API_ROUTES = ["/api/reset-password"];
+
+function isPublicRoute(pathname: string): boolean {
+  if (PUBLIC_AUTH_ROUTES.includes(pathname)) {
+    return true;
+  }
+
+  return PUBLIC_API_ROUTES.includes(pathname);
+}
+
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
@@ -30,17 +42,15 @@ export async function middleware(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const pathname = request.nextUrl.pathname;
-  const isAuthRoute = pathname.startsWith("/auth");
-  const isPublicRoute =
-    isAuthRoute || pathname === "/api/reset-password";
+  const isPublic = isPublicRoute(pathname);
 
-  if (!user && !isPublicRoute) {
+  if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
     return NextResponse.redirect(url);
   }
 
-  if (user && isAuthRoute) {
+  if (user && pathname === "/auth/login") {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
     return NextResponse.redirect(url);

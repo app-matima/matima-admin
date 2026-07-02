@@ -1,3 +1,5 @@
+"use client";
+
 import { EquipeSection } from "@/components/parametres/equipe-section";
 import { MonCompteSection } from "@/components/parametres/mon-compte-section";
 import type { AdminUser } from "@/types/admin";
@@ -11,6 +13,9 @@ export function ParametresPageContent({
   currentUser,
   users,
 }: ParametresPageContentProps) {
+  const isAdmin = currentUser.role === "admin";
+  const currentUserId = currentUser.id;
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-medium tracking-tight text-text-strong">
@@ -19,7 +24,8 @@ export function ParametresPageContent({
 
       <EquipeSection
         users={users}
-        isAdmin={currentUser.role === "admin"}
+        isAdmin={isAdmin}
+        currentUserId={currentUserId}
       />
       <MonCompteSection user={currentUser} />
     </div>

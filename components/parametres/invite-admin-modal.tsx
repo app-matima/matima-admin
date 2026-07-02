@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { inviteAdminUser } from "@/lib/admin/actions";
 import type { AdminRole } from "@/types/admin";
 
 interface InviteAdminModalProps {
@@ -62,9 +61,18 @@ export function InviteAdminModal({
     setErreur(null);
     setEnCours(true);
 
-    const result = await inviteAdminUser({ prenom, nom, email, role });
+    const response = await fetch("/api/invite-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, prenom, nom, role }),
+    });
 
-    if (!result.success) {
+    const result = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+    };
+
+    if (!response.ok || !result.success) {
       setErreur(result.error ?? "Impossible d'envoyer l'invitation.");
       setEnCours(false);
       return;

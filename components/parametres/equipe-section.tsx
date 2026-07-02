@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Users } from "lucide-react";
+import { Plus, Trash2, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/shared/badge";
 import { InviteAdminModal } from "@/components/parametres/invite-admin-modal";
@@ -12,14 +12,60 @@ import {
 } from "@/lib/admin/utils";
 import type { AdminUser } from "@/types/admin";
 
+const deleteButtonClassName =
+  "inline-flex items-center gap-1.5 rounded-lg border border-[#FECACA] bg-transparent px-3 py-1.5 text-xs font-medium text-[#DC2626] transition-colors hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50";
+
 interface EquipeSectionProps {
   users: AdminUser[];
   isAdmin: boolean;
+  currentUserId: string;
 }
 
-export function EquipeSection({ users, isAdmin }: EquipeSectionProps) {
+export function EquipeSection({
+  users,
+  isAdmin,
+  currentUserId,
+}: EquipeSectionProps) {
   const router = useRouter();
   const [modaleOuverte, setModaleOuverte] = useState(false);
+  const [suppressionEnCours, setSuppressionEnCours] = useState<string | null>(
+    null,
+  );
+  const [erreur, setErreur] = useState<string | null>(null);
+
+  async function handleDelete(user: AdminUser) {
+    const nomComplet = getAdminNomComplet(user);
+    const confirme = window.confirm(
+      `Supprimer ${nomComplet} de l'équipe ? Cette action est irréversible.`,
+    );
+
+    if (!confirme) {
+      return;
+    }
+
+    setErreur(null);
+    setSuppressionEnCours(user.id);
+
+    const response = await fetch("/api/delete-admin-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: user.id }),
+    });
+
+    const result = (await response.json()) as {
+      success?: boolean;
+      error?: string;
+    };
+
+    if (!response.ok || !result.success) {
+      setErreur(result.error ?? "Impossible de supprimer cet utilisateur.");
+      setSuppressionEnCours(null);
+      return;
+    }
+
+    setSuppressionEnCours(null);
+    router.refresh();
+  }
 
   return (
     <section className="rounded-xl border border-border bg-card">
@@ -48,8 +94,17 @@ export function EquipeSection({ users, isAdmin }: EquipeSectionProps) {
         </div>
       ) : (
         <>
+          {erreur && (
+            <p className="border-b border-border px-4 py-3 text-sm text-[#DC2626]">
+              {erreur}
+            </p>
+          )}
+
           <div className="divide-y divide-border lg:hidden">
-            {users.map((user) => (
+            {users.map((user) => {
+              const canDelete = isAdmin && user.id !== currentUserId;
+
+              return (
               <div key={user.id} className="space-y-2 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -65,10 +120,24 @@ export function EquipeSection({ users, isAdmin }: EquipeSectionProps) {
                     <Badge variant={user.actif ? "success" : "neutral"}>
                       {user.actif ? "Actif" : "Inactif"}
                     </Badge>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => void handleDelete(user)}
+                        disabled={suppressionEnCours === user.id}
+                        className={deleteButtonClassName}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {suppressionEnCours === user.id
+                          ? "Suppression…"
+                          : "Supprimer"}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="hidden overflow-x-auto lg:block">
@@ -87,10 +156,18 @@ export function EquipeSection({ users, isAdmin }: EquipeSectionProps) {
                   <th className="px-4 py-3 text-left text-xs font-medium text-text-muted">
                     Statut
                   </th>
+                  {isAdmin && (
+                    <th className="px-4 py-3 text-right text-xs font-medium text-text-muted">
+                      Actions
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
-                {users.map((user) => (
+                {users.map((user) => {
+                  const canDelete = isAdmin && user.id !== currentUserId;
+
+                  return (
                   <tr
                     key={user.id}
                     className="border-b border-border transition-colors hover:bg-page"
@@ -111,8 +188,26 @@ export function EquipeSection({ users, isAdmin }: EquipeSectionProps) {
                         {user.actif ? "Actif" : "Inactif"}
                       </Badge>
                     </td>
+                    {isAdmin && (
+                      <td className="px-4 py-3 text-right">
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleDelete(user)}
+                            disabled={suppressionEnCours === user.id}
+                            className={deleteButtonClassName}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            {suppressionEnCours === user.id
+                              ? "Suppression…"
+                              : "Supprimer"}
+                          </button>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
