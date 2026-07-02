@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 
 export default function RegisterPage() {
-  const router = useRouter();
+  const [prenom, setPrenom] = useState("");
+  const [nom, setNom] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -26,20 +26,21 @@ export default function RegisterPage() {
     setLoading(true);
 
     const supabase = createClient();
-    const { data, error: authError } = await supabase.auth.signUp({
-      email,
+    const { error: authError } = await supabase.auth.signUp({
+      email: email.trim(),
       password,
+      options: {
+        data: {
+          role: "admin",
+          prenom: prenom.trim(),
+          nom: nom.trim(),
+        },
+      },
     });
 
     if (authError) {
       setError(authError.message || JSON.stringify(authError));
       setLoading(false);
-      return;
-    }
-
-    if (data.session) {
-      router.push("/dashboard");
-      router.refresh();
       return;
     }
 
@@ -52,17 +53,13 @@ export default function RegisterPage() {
       <div className="flex min-h-screen items-center justify-center bg-page px-4">
         <div className="w-full max-w-md rounded-xl bg-card p-8 shadow-sm border border-border text-center">
           <h1 className="text-2xl font-semibold text-text-strong">
-            Vérifiez votre email
+            Compte créé, vous pouvez vous connecter
           </h1>
-          <p className="mt-3 text-sm text-text-muted">
-            Un lien de confirmation a été envoyé à{" "}
-            <span className="font-medium text-text-strong">{email}</span>.
-          </p>
           <Link
             href="/auth/login"
             className="mt-6 inline-block text-sm font-medium text-accent hover:text-accent-hover transition-colors"
           >
-            Retour à la connexion
+            Se connecter
           </Link>
         </div>
       </div>
@@ -80,6 +77,46 @@ export default function RegisterPage() {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor="prenom"
+                className="block text-sm font-medium text-text-strong mb-1.5"
+              >
+                Prénom
+              </label>
+              <input
+                id="prenom"
+                type="text"
+                value={prenom}
+                onChange={(e) => setPrenom(e.target.value)}
+                required
+                autoComplete="given-name"
+                className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-text-strong placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
+                placeholder="Marie"
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="nom"
+                className="block text-sm font-medium text-text-strong mb-1.5"
+              >
+                Nom
+              </label>
+              <input
+                id="nom"
+                type="text"
+                value={nom}
+                onChange={(e) => setNom(e.target.value)}
+                required
+                autoComplete="family-name"
+                className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-sm text-text-strong placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent"
+                placeholder="Dupont"
+              />
+            </div>
+          </div>
+
           <div>
             <label
               htmlFor="email"
