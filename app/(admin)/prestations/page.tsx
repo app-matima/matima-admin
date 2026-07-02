@@ -1,7 +1,10 @@
-export default function PrestationsPage() {
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold text-text-strong">Prestations</h1>
-    </div>
-  );
+import { PrestationsPageContent } from "@/components/prestations/prestations-page-content";
+import { getAllPrestations } from "@/lib/prestations/get-prestations";
+
+export const dynamic = "force-dynamic";
+
+export default async function PrestationsPage() {
+  const prestations = await getAllPrestations();
+
+  return <PrestationsPageContent prestations={prestations} />;
 }

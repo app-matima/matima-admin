@@ -1,6 +1,43 @@
 import type { StatutPrestation } from "@/types";
 import type { BadgeVariant } from "@/components/shared/badge";
 
+export type FiltrePrestation =
+  | "toutes"
+  | "en_attente"
+  | "confirme"
+  | "en_cours"
+  | "realise"
+  | "annule";
+
+export const filtresPrestation: { id: FiltrePrestation; label: string }[] = [
+  { id: "toutes", label: "Toutes" },
+  { id: "en_attente", label: "En attente" },
+  { id: "confirme", label: "Confirmées" },
+  { id: "en_cours", label: "En cours" },
+  { id: "realise", label: "Réalisées" },
+  { id: "annule", label: "Annulées" },
+];
+
+export function filtrerPrestations<T extends { statut: StatutPrestation }>(
+  prestations: T[],
+  filtre: FiltrePrestation,
+): T[] {
+  if (filtre === "toutes") {
+    return prestations;
+  }
+
+  return prestations.filter((prestation) => prestation.statut === filtre);
+}
+
+export function formatHeureSouhaitee(heure?: string | null): string {
+  if (!heure?.trim()) {
+    return "—";
+  }
+
+  const partie = heure.trim().split("T").pop() ?? heure.trim();
+  return partie.slice(0, 5);
+}
+
 export function getNomMajeur(
   majeur:
     | { nom: string; prenom: string }

@@ -11,6 +11,9 @@ export interface PrestationCommande {
   majeur_id: string;
   description: string;
   date_souhaitee: string;
+  heure_souhaitee?: string | null;
+  adresse_intervention?: string | null;
+  instructions?: string | null;
   statut: StatutPrestation;
   created_at?: string;
 }
