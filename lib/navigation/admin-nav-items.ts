@@ -62,8 +62,19 @@ export const prestataireRestrictedPaths = [
   "/parametres",
 ] as const;
 
+export const PRESTATAIRE_HOME_PATH = "/prestations";
+
 export function getNavItemsForRole(role: AdminRole): AdminNavItem[] {
-  return adminNavItems.filter((item) => item.roles.includes(role));
+  const items = adminNavItems.filter((item) => item.roles.includes(role));
+
+  if (role === "prestataire") {
+    const order = ["/prestations", "/planning", "/contacts"];
+    return [...items].sort(
+      (a, b) => order.indexOf(a.href) - order.indexOf(b.href),
+    );
+  }
+
+  return items;
 }
 
 export function isPrestataireRestrictedPath(pathname: string): boolean {

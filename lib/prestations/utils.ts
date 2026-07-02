@@ -107,3 +107,38 @@ export function getStatutPrestationBadgeVariant(
       return "neutral";
   }
 }
+
+export function getPrestationsEnAttenteNonAssignees<
+  T extends { statut: StatutPrestation; prestataire_id?: string | null },
+>(prestations: T[]): T[] {
+  return prestations.filter(
+    (prestation) =>
+      prestation.statut === "en_attente" && !prestation.prestataire_id,
+  );
+}
+
+export function getPrestationsMesMissions<
+  T extends {
+    statut: StatutPrestation;
+    prestataire_id?: string | null;
+  },
+>(prestations: T[], prestataireId: string): T[] {
+  return prestations.filter(
+    (prestation) =>
+      prestation.prestataire_id === prestataireId &&
+      (prestation.statut === "confirme" || prestation.statut === "en_cours"),
+  );
+}
+
+export function getPrestationsHistorique<
+  T extends {
+    statut: StatutPrestation;
+    prestataire_id?: string | null;
+  },
+>(prestations: T[], prestataireId: string): T[] {
+  return prestations.filter(
+    (prestation) =>
+      prestation.prestataire_id === prestataireId &&
+      (prestation.statut === "realise" || prestation.statut === "annule"),
+  );
+}
