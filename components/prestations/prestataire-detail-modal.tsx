@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
-import { PrestationActions } from "@/components/prestations/prestation-actions";
 import { SignatureModal } from "@/components/prestations/signature-modal";
+import { updatePrestationStatut } from "@/lib/prestations/actions";
 import {
   formatHeureSouhaitee,
   getNomMajeur,
@@ -14,24 +14,34 @@ import {
   getStatutPrestationLabel,
 } from "@/lib/prestations/utils";
 import { formatDateAffichage, formatDateTimeAffichage } from "@/lib/utils/date";
+import { cn } from "@/lib/utils";
 import type { PrestationAvecRelations, StatutPrestation } from "@/types";
 
-interface PrestationDetailModalProps {
+interface PrestataireDetailModalProps {
   prestation: PrestationAvecRelations | null;
   onClose: () => void;
 }
 
-export function PrestationDetailModal({
+const primaryButtonClass =
+  "rounded-lg bg-accent text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50";
+
+const dangerButtonClass =
+  "rounded-lg border border-[#FECACA] bg-transparent text-sm font-medium text-[#DC2626] transition-colors hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50";
+
+export function PrestataireDetailModal({
   prestation,
   onClose,
-}: PrestationDetailModalProps) {
+}: PrestataireDetailModalProps) {
   const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const [statut, setStatut] = useState<StatutPrestation | null>(null);
+  const [erreur, setErreur] = useState<string | null>(null);
   const [signatureOpen, setSignatureOpen] = useState(false);
 
   useEffect(() => {
     if (prestation) {
       setStatut(prestation.statut);
+      setErreur(null);
     }
   }, [prestation]);
 
@@ -61,6 +71,24 @@ export function PrestationDetailModal({
 
   const activePrestation = prestation;
 
+  function handleStatutUpdate(nouveauStatut: StatutPrestation) {
+    setErreur(null);
+    startTransition(async () => {
+      const result = await updatePrestationStatut(
+        activePrestation.id,
+        nouveauStatut,
+      );
+
+      if (!result.success) {
+        setErreur(result.error ?? "Impossible de mettre à jour le statut.");
+        return;
+      }
+
+      setStatut(nouveauStatut);
+      router.refresh();
+    });
+  }
+
   function handleAttestationSuccess() {
     setStatut("realise");
     setSignatureOpen(false);
@@ -68,13 +96,19 @@ export function PrestationDetailModal({
     onClose();
   }
 
+  const buttonClass = (variant: "primary" | "danger") =>
+    cn(
+      variant === "primary" ? primaryButtonClass : dangerButtonClass,
+      "w-full px-4 py-2.5 sm:w-auto",
+    );
+
   return (
     <>
       <div
         className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-4"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="prestation-detail-titre"
+        aria-labelledby="prestataire-detail-titre"
       >
         <button
           type="button"
@@ -87,10 +121,10 @@ export function PrestationDetailModal({
           <div className="flex items-start justify-between gap-4 border-b border-border p-4">
             <div className="min-w-0">
               <h2
-                id="prestation-detail-titre"
+                id="prestataire-detail-titre"
                 className="text-lg font-medium text-text-strong"
               >
-                Détail de la prestation
+                Détail de la mission
               </h2>
               <p className="mt-1 text-sm text-text-muted">
                 {getNomMajeur(activePrestation.majeurs)}
@@ -152,25 +186,43 @@ export function PrestationDetailModal({
             </DetailField>
           </div>
 
-          <div className="space-y-3 border-t border-border p-4">
-            {statut === "realise" && activePrestation.attestation_url && (
-              <a
-                href={activePrestation.attestation_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover sm:w-auto"
-              >
-                Voir l&apos;attestation
-              </a>
-            )}
-            <PrestationActions
-              prestationId={activePrestation.id}
-              statut={statut}
-              layout="modal"
-              onStatutUpdated={setStatut}
-              onMarquerRealisee={() => setSignatureOpen(true)}
-            />
-          </div>
+          {(statut === "confirme" || statut === "en_cours") && (
+            <div className="border-t border-border p-4">
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                {statut === "confirme" && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => handleStatutUpdate("en_cours")}
+                      className={buttonClass("primary")}
+                    >
+                      Démarrer
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isPending}
+                      onClick={() => handleStatutUpdate("annule")}
+                      className={buttonClass("danger")}
+                    >
+                      Annuler
+                    </button>
+                  </>
+                )}
+                {statut === "en_cours" && (
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => setSignatureOpen(true)}
+                    className={buttonClass("primary")}
+                  >
+                    Marquer réalisée
+                  </button>
+                )}
+              </div>
+              {erreur && <p className="mt-2 text-xs text-[#DC2626]">{erreur}</p>}
+            </div>
+          )}
         </div>
       </div>
 

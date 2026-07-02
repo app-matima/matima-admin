@@ -7,7 +7,7 @@ export async function getAllPrestations(): Promise<PrestationAvecRelations[]> {
   const { data, error } = await supabase
     .from("prestations_commandes")
     .select(
-      "id, organisation_id, majeur_id, description, date_souhaitee, heure_souhaitee, adresse_intervention, instructions, statut, prestataire_id, created_at, majeurs(nom, prenom), organisations(nom)",
+      "id, organisation_id, majeur_id, description, date_souhaitee, heure_souhaitee, adresse_intervention, instructions, statut, prestataire_id, attestation_url, created_at, majeurs(nom, prenom), organisations(nom)",
     )
     .order("created_at", { ascending: false });
 

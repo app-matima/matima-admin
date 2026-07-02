@@ -17,6 +17,7 @@ export interface PrestationCommande {
   instructions?: string | null;
   statut: StatutPrestation;
   prestataire_id?: string | null;
+  attestation_url?: string | null;
   created_at?: string;
 }
 

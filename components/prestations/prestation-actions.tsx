@@ -18,6 +18,7 @@ interface PrestationActionsProps {
   statut: StatutPrestation;
   layout?: "inline" | "modal";
   onStatutUpdated?: (statut: StatutPrestation) => void;
+  onMarquerRealisee?: () => void;
 }
 
 const primaryButtonClass =
@@ -31,6 +32,7 @@ export function PrestationActions({
   statut,
   layout = "inline",
   onStatutUpdated,
+  onMarquerRealisee,
 }: PrestationActionsProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -49,7 +51,13 @@ export function PrestationActions({
     });
   }
 
-  const actions = getActionsForStatut(statut, handleAction, isPending, layout);
+  const actions = getActionsForStatut(
+    statut,
+    handleAction,
+    isPending,
+    layout,
+    onMarquerRealisee,
+  );
 
   if (actions.length === 0) {
     return null;
@@ -88,6 +96,7 @@ function getActionsForStatut(
   handleAction: (statut: StatutPrestation) => void,
   disabled: boolean,
   layout: "inline" | "modal",
+  onMarquerRealisee?: () => void,
 ) {
   switch (statut) {
     case "en_attente":
@@ -138,7 +147,9 @@ function getActionsForStatut(
           key="realise"
           type="button"
           disabled={disabled}
-          onClick={() => handleAction("realise")}
+          onClick={() =>
+            onMarquerRealisee ? onMarquerRealisee() : handleAction("realise")
+          }
           className={getButtonClass("primary", layout)}
         >
           Marquer réalisée

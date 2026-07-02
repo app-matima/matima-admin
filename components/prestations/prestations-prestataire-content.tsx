@@ -4,7 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Briefcase, ChevronDown } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
-import { PrestationDetailModal } from "@/components/prestations/prestation-detail-modal";
+import { PrestataireDetailModal } from "@/components/prestations/prestataire-detail-modal";
 import { acceptPrestation } from "@/lib/prestations/actions";
 import {
   formatHeureSouhaitee,
@@ -303,7 +303,7 @@ export function PrestationsPrestataireContent({
           </div>
         )}
 
-      <PrestationDetailModal
+      <PrestataireDetailModal
         prestation={selectedPrestation}
         onClose={() => setSelectedPrestation(null)}
       />
