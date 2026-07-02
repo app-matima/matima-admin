@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   ClipboardList,
   Users,
+  ContactRound,
   Settings,
   LogOut,
 } from "lucide-react";
@@ -16,6 +17,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/prestations", label: "Prestations", icon: ClipboardList },
   { href: "/mjpms", label: "Clients", icon: Users },
+  { href: "/contacts", label: "Contacts", icon: ContactRound },
   { href: "/parametres", label: "Paramètres", icon: Settings },
 ];
 
