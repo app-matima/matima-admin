@@ -29,7 +29,25 @@ export function getAdminNomComplet(
   return `${user.prenom} ${user.nom}`.trim();
 }
 
+export function getAdminUserLabel(
+  userId: string | null | undefined,
+  users: Pick<AdminUserFields, "id" | "prenom" | "nom">[],
+): string {
+  if (!userId) {
+    return "Non assigné";
+  }
+
+  const user = users.find((member) => member.id === userId);
+
+  if (!user) {
+    return "Non assigné";
+  }
+
+  return getAdminNomComplet(user);
+}
+
 interface AdminUserFields {
+  id: string;
   prenom: string;
   nom: string;
 }

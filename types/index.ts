@@ -11,10 +11,12 @@ export interface PrestationCommande {
   majeur_id: string;
   description: string;
   date_souhaitee: string;
+  date_acceptee?: string | null;
   heure_souhaitee?: string | null;
   adresse_intervention?: string | null;
   instructions?: string | null;
   statut: StatutPrestation;
+  prestataire_id?: string | null;
   created_at?: string;
 }
 

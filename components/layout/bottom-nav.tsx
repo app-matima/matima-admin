@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   ClipboardList,
+  CalendarDays,
   Users,
   ContactRound,
   Settings,
@@ -16,6 +17,7 @@ import { useSignOut } from "./use-sign-out";
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/prestations", label: "Prestations", icon: ClipboardList },
+  { href: "/planning", label: "Planning", icon: CalendarDays },
   { href: "/mjpms", label: "Clients", icon: Users },
   { href: "/contacts", label: "Contacts", icon: ContactRound },
   { href: "/parametres", label: "Paramètres", icon: Settings },

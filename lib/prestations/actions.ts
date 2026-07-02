@@ -22,6 +22,7 @@ export async function updatePrestationStatut(
 
   revalidatePath("/prestations");
   revalidatePath("/dashboard");
+  revalidatePath("/planning");
 
   return { success: true };
 }
