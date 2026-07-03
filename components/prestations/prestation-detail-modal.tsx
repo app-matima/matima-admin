@@ -155,7 +155,7 @@ export function PrestationDetailModal({
           <div className="space-y-3 border-t border-border p-4">
             {statut === "realise" && activePrestation.attestation_url && (
               <a
-                href={activePrestation.attestation_url}
+                href={`/api/storage/sign?path=${encodeURIComponent(activePrestation.attestation_url)}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover sm:w-auto"

@@ -141,16 +141,10 @@ export async function POST(
     return NextResponse.json({ error: uploadError.message }, { status: 500 });
   }
 
-  const { data: publicUrlData } = supabase.storage
-    .from("documents")
-    .getPublicUrl(storagePath);
-
-  const attestationUrl = publicUrlData.publicUrl;
-
   const { error: updateError } = await supabase
     .from("prestations_commandes")
     .update({
-      attestation_url: attestationUrl,
+      attestation_url: storagePath,
       statut: "realise",
     })
     .eq("id", id);
@@ -180,7 +174,7 @@ export async function POST(
 
   return NextResponse.json({
     success: true,
-    attestation_url: attestationUrl,
+    attestation_url: storagePath,
     majeur: getNomMajeur(prestation.majeurs),
   });
 }
