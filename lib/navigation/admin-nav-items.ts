@@ -3,6 +3,7 @@ import {
   CalendarDays,
   ClipboardList,
   ContactRound,
+  KeyRound,
   LayoutDashboard,
   Settings,
   Users,
@@ -42,6 +43,12 @@ export const adminNavItems: AdminNavItem[] = [
     roles: ["admin"],
   },
   {
+    href: "/cles",
+    label: "Clés",
+    icon: KeyRound,
+    roles: ["admin"],
+  },
+  {
     href: "/contacts",
     label: "Contacts",
     icon: ContactRound,
@@ -59,6 +66,7 @@ export const prestataireRestrictedPaths = [
   "/dashboard",
   "/mjpms",
   "/clients",
+  "/cles",
   "/parametres",
 ] as const;
 
