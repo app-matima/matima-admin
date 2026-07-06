@@ -1,7 +1,13 @@
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
-import { isPrestataireRestrictedPath, PRESTATAIRE_HOME_PATH } from "@/lib/navigation/admin-nav-items";
+import {
+  ADMINISTRATIF_HOME_PATH,
+  getHomePathForRole,
+  isAdministratifRestrictedPath,
+  isPrestataireRestrictedPath,
+  PRESTATAIRE_HOME_PATH,
+} from "@/lib/navigation/admin-nav-items";
 import type { AdminRole } from "@/types/admin";
 
 const PUBLIC_AUTH_ROUTES = ["/auth/login", "/auth/accept-invite"];
@@ -89,13 +95,19 @@ export async function middleware(request: NextRequest) {
 
     if (pathname === "/auth/login") {
       const url = request.nextUrl.clone();
-      url.pathname = role === "prestataire" ? PRESTATAIRE_HOME_PATH : "/dashboard";
+      url.pathname = role ? getHomePathForRole(role) : "/dashboard";
       return NextResponse.redirect(url);
     }
 
     if (role === "prestataire" && isPrestataireRestrictedPath(pathname)) {
       const url = request.nextUrl.clone();
       url.pathname = PRESTATAIRE_HOME_PATH;
+      return NextResponse.redirect(url);
+    }
+
+    if (role === "administratif" && isAdministratifRestrictedPath(pathname)) {
+      const url = request.nextUrl.clone();
+      url.pathname = ADMINISTRATIF_HOME_PATH;
       return NextResponse.redirect(url);
     }
   }

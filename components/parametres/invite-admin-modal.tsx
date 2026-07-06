@@ -178,6 +178,7 @@ export function InviteAdminModal({
             >
               <option value="admin">Admin</option>
               <option value="prestataire">Prestataire</option>
+              <option value="administratif">Administratif</option>
             </select>
           </div>
 

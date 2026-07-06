@@ -7,6 +7,8 @@ export function getAdminRoleLabel(role: AdminRole): string {
       return "Admin";
     case "prestataire":
       return "Prestataire";
+    case "administratif":
+      return "Administratif";
     default:
       return role;
   }
@@ -18,6 +20,8 @@ export function getAdminRoleBadgeVariant(role: AdminRole): BadgeVariant {
       return "info";
     case "prestataire":
       return "neutral";
+    case "administratif":
+      return "warning";
     default:
       return "neutral";
   }

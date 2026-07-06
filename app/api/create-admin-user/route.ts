@@ -35,7 +35,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (role !== "admin" && role !== "prestataire") {
+  if (role !== "admin" && role !== "prestataire" && role !== "administratif") {
     return NextResponse.json({ error: "Rôle invalide." }, { status: 400 });
   }
 

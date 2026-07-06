@@ -4,7 +4,7 @@ import { MetricCards } from "@/components/dashboard/metric-cards";
 import { NouveauxClients } from "@/components/dashboard/nouveaux-clients";
 import { getCurrentAdminUser } from "@/lib/admin/get-current-admin-user";
 import { getDashboardData } from "@/lib/dashboard/get-dashboard-data";
-import { PRESTATAIRE_HOME_PATH } from "@/lib/navigation/admin-nav-items";
+import { getHomePathForRole } from "@/lib/navigation/admin-nav-items";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +15,8 @@ export default async function DashboardPage() {
     redirect("/auth/login");
   }
 
-  if (currentUser.role === "prestataire") {
-    redirect(PRESTATAIRE_HOME_PATH);
+  if (currentUser.role !== "admin") {
+    redirect(getHomePathForRole(currentUser.role));
   }
 
   const { metrics, dernieresPrestations, nouveauxClients } =
