@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { CourrierAvecRelations } from "@/types/courriers";
 
 const COURRIER_SELECT = `
@@ -20,10 +21,16 @@ const COURRIER_SELECT = `
 
 export async function getCourriers(): Promise<CourrierAvecRelations[]> {
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+
+  if (organisationIds.length === 0) {
+    return [];
+  }
 
   const { data, error } = await supabase
     .from("courriers")
     .select(COURRIER_SELECT)
+    .in("organisation_id", organisationIds)
     .order("created_at", { ascending: false });
 
   if (error) {

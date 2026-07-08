@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { MjpmProfile } from "@/types/clients";
 import type { ScanGedOrganisation } from "@/types/scan-ged";
 
@@ -36,11 +37,20 @@ async function enrichMjpmProfile(userId: string): Promise<MjpmProfile> {
 
 export async function getScanGedOrganisations(): Promise<ScanGedOrganisation[]> {
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+
+  if (organisationIds.length === 0) {
+    return [];
+  }
 
   const [organisationsResult, mjpmResult] = await Promise.all([
-    supabase.from("organisations").select("id, nom").order("nom", {
-      ascending: true,
-    }),
+    supabase
+      .from("organisations")
+      .select("id, nom")
+      .in("id", organisationIds)
+      .order("nom", {
+        ascending: true,
+      }),
     supabase
       .from("utilisateurs")
       .select("id, organisation_id, role")
@@ -83,6 +93,15 @@ export async function getScanGedOrganisationContext(
   organisationId: string,
 ) {
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+
+  if (!organisationIds.includes(organisationId)) {
+    return {
+      categories: [],
+      majeurs: [],
+      documents: [],
+    };
+  }
 
   const [categoriesResult, majeursResult, documentsResult] =
     await Promise.all([

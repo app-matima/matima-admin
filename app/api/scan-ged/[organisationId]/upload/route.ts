@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { traiterFichiersNonClasse } from "@/lib/documents/non-classes-server";
+import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import { createAdminClient } from "@/lib/supabase/server";
 import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 
@@ -24,6 +25,13 @@ export async function POST(
   }
 
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+  if (!organisationIds.includes(organisationId)) {
+    return NextResponse.json(
+      { error: "Organisation introuvable." },
+      { status: 404 },
+    );
+  }
 
   const [categoriesResult, majeursResult] = await Promise.all([
     supabase

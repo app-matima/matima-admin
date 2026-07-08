@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { MjpmProfile } from "@/types/clients";
 import type { CleProtege, OrganisationClesGroupe, StatutCle } from "@/types/cles";
 
@@ -83,15 +84,22 @@ async function ensureClesForMajeurs(majeurIds: string[]): Promise<void> {
 
 export async function getClesData(): Promise<OrganisationClesGroupe[]> {
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+
+  if (organisationIds.length === 0) {
+    return [];
+  }
 
   const [majeursResult, mjpmResult] = await Promise.all([
     supabase
       .from("majeurs")
       .select("id, organisation_id, nom, prenom")
+      .in("organisation_id", organisationIds)
       .order("nom", { ascending: true }),
     supabase
       .from("utilisateurs")
       .select("id, organisation_id, role")
+      .in("organisation_id", organisationIds)
       .eq("role", "mjpm"),
   ]);
 

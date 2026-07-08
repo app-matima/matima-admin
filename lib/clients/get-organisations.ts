@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { Plan } from "@/lib/clients/plans";
 import type {
   ClientDetail,
@@ -116,16 +117,26 @@ export async function getAllPlans(): Promise<Plan[]> {
 
 export async function getAllClients(): Promise<ClientListItem[]> {
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+
+  if (organisationIds.length === 0) {
+    return [];
+  }
 
   const [organisationsResult, majeursResult, mjpmResult] = await Promise.all([
     supabase
       .from("organisations")
       .select(ORGANISATION_SELECT)
+      .in("id", organisationIds)
       .order("created_at", { ascending: false }),
-    supabase.from("majeurs").select("organisation_id, statut"),
+    supabase
+      .from("majeurs")
+      .select("organisation_id, statut")
+      .in("organisation_id", organisationIds),
     supabase
       .from("utilisateurs")
       .select("id, organisation_id, role")
+      .in("organisation_id", organisationIds)
       .eq("role", "mjpm"),
   ]);
 
@@ -177,6 +188,10 @@ export async function getClientDetail(
   organisationId: string,
 ): Promise<ClientDetail | null> {
   const supabase = createAdminClient();
+  const organisationIds = await getNonDemoOrganisationIds();
+  if (!organisationIds.includes(organisationId)) {
+    return null;
+  }
 
   const [
     organisationResult,
