@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { getCurrentAdminUser } from "@/lib/admin/get-current-admin-user";
 import { generateAttestationPdf } from "@/lib/prestations/generate-attestation-pdf";
+import { notifyPrestationStatutChange } from "@/lib/prestations/notify-prestation-statut-change";
 import { getNomMajeur } from "@/lib/prestations/utils";
 import { createAdminClient } from "@/lib/supabase/server";
+import type { StatutPrestation } from "@/types";
 
 interface AttestationBody {
   signature?: string;
@@ -146,6 +148,7 @@ export async function POST(
     .update({
       attestation_url: storagePath,
       statut: "realise",
+      statut_facturation: "a_facturer",
     })
     .eq("id", id);
 
@@ -166,6 +169,20 @@ export async function POST(
   if (documentError) {
     console.error("attestation insert document", documentError);
     return NextResponse.json({ error: documentError.message }, { status: 500 });
+  }
+
+  if (currentUser.role === "admin") {
+    try {
+      await notifyPrestationStatutChange({
+        organisationId: prestation.organisation_id,
+        description: prestation.description,
+        ancienStatut: prestation.statut as StatutPrestation,
+        nouveauStatut: "realise",
+        majeur: prestation.majeurs,
+      });
+    } catch (emailError) {
+      console.error("attestation email", emailError);
+    }
   }
 
   revalidatePath("/prestations");

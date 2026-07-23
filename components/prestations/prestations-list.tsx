@@ -10,6 +10,8 @@ import {
   formatHeureSouhaitee,
   getNomMajeur,
   getNomOrganisation,
+  getStatutFacturationBadgeVariant,
+  getStatutFacturationLabel,
   getStatutPrestationBadgeVariant,
   getStatutPrestationLabel,
   type FiltrePrestation,
@@ -101,13 +103,26 @@ export function PrestationsList({ prestations }: PrestationsListProps) {
                         {getNomOrganisation(prestation.organisations)}
                       </p>
                     </div>
-                    <Badge
-                      variant={getStatutPrestationBadgeVariant(
-                        prestation.statut,
+                    <div className="flex shrink-0 flex-col items-end gap-1.5">
+                      <Badge
+                        variant={getStatutPrestationBadgeVariant(
+                          prestation.statut,
+                        )}
+                      >
+                        {getStatutPrestationLabel(prestation.statut)}
+                      </Badge>
+                      {prestation.statut === "realise" && (
+                        <Badge
+                          variant={getStatutFacturationBadgeVariant(
+                            prestation.statut_facturation,
+                          )}
+                        >
+                          {getStatutFacturationLabel(
+                            prestation.statut_facturation,
+                          )}
+                        </Badge>
                       )}
-                    >
-                      {getStatutPrestationLabel(prestation.statut)}
-                    </Badge>
+                    </div>
                   </div>
 
                   <p className="text-sm text-text-muted line-clamp-2">
@@ -151,6 +166,9 @@ export function PrestationsList({ prestations }: PrestationsListProps) {
                     <th className="px-4 py-3 text-left text-xs font-medium text-text-muted">
                       Statut
                     </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-text-muted">
+                      Facturation
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -190,6 +208,21 @@ export function PrestationsList({ prestations }: PrestationsListProps) {
                         >
                           {getStatutPrestationLabel(prestation.statut)}
                         </Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        {prestation.statut === "realise" ? (
+                          <Badge
+                            variant={getStatutFacturationBadgeVariant(
+                              prestation.statut_facturation,
+                            )}
+                          >
+                            {getStatutFacturationLabel(
+                              prestation.statut_facturation,
+                            )}
+                          </Badge>
+                        ) : (
+                          <span className="text-sm text-text-muted">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}

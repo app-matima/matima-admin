@@ -49,11 +49,14 @@ export async function POST(request: Request) {
   const redirectTo = `${origin}/auth/accept-invite`;
 
   const supabase = createAdminClient();
+  const inviterNom = `${currentUser.prenom} ${currentUser.nom}`.trim();
+
   const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
     data: {
       prenom,
       nom,
       role,
+      inviter_nom: inviterNom,
     },
     redirectTo,
   });

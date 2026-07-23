@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  Calculator,
   CalendarDays,
   ClipboardList,
   ContactRound,
@@ -70,6 +71,12 @@ export const adminNavItems: AdminNavItem[] = [
     roles: ["admin", "administratif"],
   },
   {
+    href: "/finances/tva",
+    label: "TVA",
+    icon: Calculator,
+    roles: ["admin"],
+  },
+  {
     href: "/parametres",
     label: "Paramètres",
     icon: Settings,
@@ -85,6 +92,7 @@ export const prestataireRestrictedPaths = [
   "/parametres",
   "/courriers",
   "/scan-ged",
+  "/finances",
 ] as const;
 
 export const administratifRestrictedPaths = [
@@ -96,6 +104,7 @@ export const administratifRestrictedPaths = [
   "/planning",
   "/contacts",
   "/cles",
+  "/finances",
 ] as const;
 
 export const PRESTATAIRE_HOME_PATH = "/prestations";

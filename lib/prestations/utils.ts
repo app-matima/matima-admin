@@ -1,4 +1,4 @@
-import type { StatutPrestation } from "@/types";
+import type { StatutFacturation, StatutPrestation } from "@/types";
 import type { BadgeVariant } from "@/components/shared/badge";
 
 export type FiltrePrestation =
@@ -57,6 +57,26 @@ export function getNomMajeur(
   return `${donnees.nom} ${donnees.prenom ?? ""}`.trim();
 }
 
+/** Nom complet du protégé au format « prénom nom » (ex. matching Pennylane). */
+export function getNomCompletMajeur(
+  majeur:
+    | { nom: string; prenom: string }
+    | { nom: string; prenom: string }[]
+    | null
+    | undefined,
+): string {
+  if (!majeur) {
+    return "";
+  }
+
+  const donnees = Array.isArray(majeur) ? majeur[0] : majeur;
+  if (!donnees?.nom) {
+    return "";
+  }
+
+  return `${donnees.prenom ?? ""} ${donnees.nom}`.trim();
+}
+
 export function getNomOrganisation(
   organisation:
     | { nom: string }
@@ -103,6 +123,46 @@ export function getStatutPrestationBadgeVariant(
       return "success";
     case "annule":
       return "neutral";
+    default:
+      return "neutral";
+  }
+}
+
+export function getStatutFacturation(
+  statut: StatutFacturation | null | undefined,
+): StatutFacturation {
+  return statut ?? "a_facturer";
+}
+
+export function getStatutFacturationLabel(
+  statut: StatutFacturation | null | undefined,
+): string {
+  switch (getStatutFacturation(statut)) {
+    case "a_facturer":
+      return "À facturer";
+    case "facture_envoyee":
+      return "Facture envoyée";
+    case "payee":
+      return "Payée";
+    case "partiellement_payee":
+      return "Partiellement payée";
+    default:
+      return "À facturer";
+  }
+}
+
+export function getStatutFacturationBadgeVariant(
+  statut: StatutFacturation | null | undefined,
+): BadgeVariant {
+  switch (getStatutFacturation(statut)) {
+    case "a_facturer":
+      return "neutral";
+    case "facture_envoyee":
+      return "info";
+    case "payee":
+      return "success";
+    case "partiellement_payee":
+      return "warning";
     default:
       return "neutral";
   }

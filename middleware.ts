@@ -12,7 +12,10 @@ import type { AdminRole } from "@/types/admin";
 
 const PUBLIC_AUTH_ROUTES = ["/auth/login", "/auth/accept-invite"];
 
-const PUBLIC_API_ROUTES = ["/api/reset-password"];
+const PUBLIC_API_ROUTES = [
+  "/api/reset-password",
+  "/api/cron/sync-statuts-facturation",
+];
 
 function isPublicRoute(pathname: string): boolean {
   if (PUBLIC_AUTH_ROUTES.includes(pathname)) {

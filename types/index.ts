@@ -5,6 +5,12 @@ export type StatutPrestation =
   | "realise"
   | "annule";
 
+export type StatutFacturation =
+  | "a_facturer"
+  | "facture_envoyee"
+  | "payee"
+  | "partiellement_payee";
+
 export interface PrestationCommande {
   id: string;
   organisation_id: string;
@@ -16,6 +22,8 @@ export interface PrestationCommande {
   adresse_intervention?: string | null;
   instructions?: string | null;
   statut: StatutPrestation;
+  statut_facturation?: StatutFacturation | null;
+  pennylane_invoice_id?: string | null;
   prestataire_id?: string | null;
   attestation_url?: string | null;
   created_at?: string;

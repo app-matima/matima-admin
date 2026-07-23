@@ -5,16 +5,22 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
 import { PrestationActions } from "@/components/prestations/prestation-actions";
+import { PrestationFacturationForm } from "@/components/prestations/prestation-facturation-form";
 import { SignatureModal } from "@/components/prestations/signature-modal";
 import {
   formatHeureSouhaitee,
+  getNomCompletMajeur,
   getNomMajeur,
   getNomOrganisation,
   getStatutPrestationBadgeVariant,
   getStatutPrestationLabel,
 } from "@/lib/prestations/utils";
 import { formatDateAffichage, formatDateTimeAffichage } from "@/lib/utils/date";
-import type { PrestationAvecRelations, StatutPrestation } from "@/types";
+import type {
+  PrestationAvecRelations,
+  StatutFacturation,
+  StatutPrestation,
+} from "@/types";
 
 interface PrestationDetailModalProps {
   prestation: PrestationAvecRelations | null;
@@ -27,11 +33,18 @@ export function PrestationDetailModal({
 }: PrestationDetailModalProps) {
   const router = useRouter();
   const [statut, setStatut] = useState<StatutPrestation | null>(null);
+  const [statutFacturation, setStatutFacturation] =
+    useState<StatutFacturation>("a_facturer");
+  const [pennylaneInvoiceId, setPennylaneInvoiceId] = useState<string | null>(
+    null,
+  );
   const [signatureOpen, setSignatureOpen] = useState(false);
 
   useEffect(() => {
     if (prestation) {
       setStatut(prestation.statut);
+      setStatutFacturation(prestation.statut_facturation ?? "a_facturer");
+      setPennylaneInvoiceId(prestation.pennylane_invoice_id ?? null);
     }
   }, [prestation]);
 
@@ -63,6 +76,7 @@ export function PrestationDetailModal({
 
   function handleAttestationSuccess() {
     setStatut("realise");
+    setStatutFacturation("a_facturer");
     setSignatureOpen(false);
     router.refresh();
     onClose();
@@ -150,6 +164,28 @@ export function PrestationDetailModal({
             <DetailField label="Date de création">
               {formatDateTimeAffichage(activePrestation.created_at)}
             </DetailField>
+
+            {statut === "realise" && (
+              <PrestationFacturationForm
+                prestationId={activePrestation.id}
+                statutFacturation={statutFacturation}
+                pennylaneInvoiceId={pennylaneInvoiceId}
+                nomClient={getNomCompletMajeur(activePrestation.majeurs)}
+                dateApprox={
+                  activePrestation.date_acceptee ||
+                  activePrestation.date_souhaitee ||
+                  activePrestation.created_at ||
+                  ""
+                }
+                onUpdated={({
+                  statutFacturation: nextStatut,
+                  pennylaneInvoiceId: nextInvoiceId,
+                }) => {
+                  setStatutFacturation(nextStatut);
+                  setPennylaneInvoiceId(nextInvoiceId);
+                }}
+              />
+            )}
           </div>
 
           <div className="space-y-3 border-t border-border p-4">
