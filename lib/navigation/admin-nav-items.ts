@@ -38,7 +38,7 @@ export const adminNavItems: AdminNavItem[] = [
     href: "/prestations",
     label: "Prestations",
     icon: ClipboardList,
-    roles: ["admin", "prestataire"],
+    roles: ["admin", "prestataire", "administratif"],
   },
   {
     href: "/mjpms",
@@ -100,7 +100,6 @@ export const administratifRestrictedPaths = [
   "/clients",
   "/mjpms",
   "/parametres",
-  "/prestations",
   "/planning",
   "/contacts",
   "/cles",
@@ -112,7 +111,7 @@ export const ADMINISTRATIF_HOME_PATH = "/courriers";
 
 const navOrderByRole: Partial<Record<AdminRole, string[]>> = {
   prestataire: ["/prestations", "/planning", "/contacts"],
-  administratif: ["/courriers", "/scan-ged"],
+  administratif: ["/courriers", "/scan-ged", "/prestations"],
 };
 
 export function getNavItemsForRole(role: AdminRole): AdminNavItem[] {

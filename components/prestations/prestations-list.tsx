@@ -22,53 +22,66 @@ import type { PrestationAvecRelations } from "@/types";
 
 interface PrestationsListProps {
   prestations: PrestationAvecRelations[];
+  canManageStatut?: boolean;
+  showStatutFilters?: boolean;
 }
 
-export function PrestationsList({ prestations }: PrestationsListProps) {
+export function PrestationsList({
+  prestations,
+  canManageStatut = true,
+  showStatutFilters = true,
+}: PrestationsListProps) {
   const [filtre, setFiltre] = useState<FiltrePrestation>("toutes");
   const [selectedPrestation, setSelectedPrestation] =
     useState<PrestationAvecRelations | null>(null);
 
   const prestationsFiltrees = useMemo(
-    () => filtrerPrestations(prestations, filtre),
-    [prestations, filtre],
+    () =>
+      showStatutFilters
+        ? filtrerPrestations(prestations, filtre)
+        : prestations,
+    [prestations, filtre, showStatutFilters],
   );
 
   return (
     <>
       <div className="space-y-4">
-        <select
-          value={filtre}
-          onChange={(event) =>
-            setFiltre(event.target.value as FiltrePrestation)
-          }
-          className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-text-strong transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 md:hidden"
-          aria-label="Filtrer par statut"
-        >
-          {filtresPrestation.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-
-        <div className="hidden gap-2 md:flex md:flex-wrap">
-          {filtresPrestation.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => setFiltre(option.id)}
-              className={cn(
-                "shrink-0 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-                filtre === option.id
-                  ? "bg-accent text-white"
-                  : "border border-border bg-card text-text-muted hover:bg-page hover:text-text-strong",
-              )}
+        {showStatutFilters && (
+          <>
+            <select
+              value={filtre}
+              onChange={(event) =>
+                setFiltre(event.target.value as FiltrePrestation)
+              }
+              className="w-full rounded-lg border border-border bg-card px-3 py-2.5 text-sm text-text-strong transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 md:hidden"
+              aria-label="Filtrer par statut"
             >
-              {option.label}
-            </button>
-          ))}
-        </div>
+              {filtresPrestation.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+
+            <div className="hidden gap-2 md:flex md:flex-wrap">
+              {filtresPrestation.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setFiltre(option.id)}
+                  className={cn(
+                    "shrink-0 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+                    filtre === option.id
+                      ? "bg-accent text-white"
+                      : "border border-border bg-card text-text-muted hover:bg-page hover:text-text-strong",
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
 
         {prestationsFiltrees.length === 0 ? (
           <div className="rounded-xl border border-border bg-card">
@@ -236,6 +249,7 @@ export function PrestationsList({ prestations }: PrestationsListProps) {
       <PrestationDetailModal
         prestation={selectedPrestation}
         onClose={() => setSelectedPrestation(null)}
+        canManageStatut={canManageStatut}
       />
     </>
   );

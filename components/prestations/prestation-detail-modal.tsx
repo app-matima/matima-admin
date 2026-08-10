@@ -25,11 +25,13 @@ import type {
 interface PrestationDetailModalProps {
   prestation: PrestationAvecRelations | null;
   onClose: () => void;
+  canManageStatut?: boolean;
 }
 
 export function PrestationDetailModal({
   prestation,
   onClose,
+  canManageStatut = true,
 }: PrestationDetailModalProps) {
   const router = useRouter();
   const [statut, setStatut] = useState<StatutPrestation | null>(null);
@@ -199,23 +201,27 @@ export function PrestationDetailModal({
                 Voir l&apos;attestation
               </a>
             )}
-            <PrestationActions
-              prestationId={activePrestation.id}
-              statut={statut}
-              layout="modal"
-              onStatutUpdated={setStatut}
-              onMarquerRealisee={() => setSignatureOpen(true)}
-            />
+            {canManageStatut && (
+              <PrestationActions
+                prestationId={activePrestation.id}
+                statut={statut}
+                layout="modal"
+                onStatutUpdated={setStatut}
+                onMarquerRealisee={() => setSignatureOpen(true)}
+              />
+            )}
           </div>
         </div>
       </div>
 
-      <SignatureModal
-        open={signatureOpen}
-        prestationId={activePrestation.id}
-        onClose={() => setSignatureOpen(false)}
-        onSuccess={handleAttestationSuccess}
-      />
+      {canManageStatut && (
+        <SignatureModal
+          open={signatureOpen}
+          prestationId={activePrestation.id}
+          onClose={() => setSignatureOpen(false)}
+          onSuccess={handleAttestationSuccess}
+        />
+      )}
     </>
   );
 }

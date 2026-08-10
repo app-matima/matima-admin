@@ -499,12 +499,6 @@ export async function rechercherFacturesCorrespondantes(
     return dateDansFenetre(invoice.date, dateRef);
   });
 
-  console.log("[Pennylane matching] nomRecherche:", nomRecherche);
-  console.log(
-    "[Pennylane matching] candidates dans fenêtre de dates:",
-    candidates.length,
-  );
-
   const customerNameCache = new Map<string, string>();
   const suggestions: FacturePennylaneSuggestion[] = [];
 
@@ -515,13 +509,6 @@ export async function rechercherFacturesCorrespondantes(
       customerNameCache,
     );
     const matchNom = nomsProches(nomRecherche, nomFacture);
-
-    console.log("[Pennylane matching] facture candidate:", {
-      invoiceId: invoice.id,
-      invoiceNumber: invoice.invoice_number,
-      nomClientResolu: nomFacture,
-      nomsProches: matchNom,
-    });
 
     if (suggestions.length >= MAX_SUGGESTIONS) {
       continue;

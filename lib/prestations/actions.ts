@@ -76,6 +76,14 @@ export async function updatePrestationStatut(
   statut: StatutPrestation,
 ): Promise<{ success: boolean; error?: string }> {
   const currentUser = await getCurrentAdminUser();
+
+  if (
+    !currentUser ||
+    (currentUser.role !== "admin" && currentUser.role !== "prestataire")
+  ) {
+    return { success: false, error: "Action non autorisée." };
+  }
+
   const supabase = createAdminClient();
 
   const { data: existing, error: fetchError } = await supabase
@@ -86,6 +94,7 @@ export async function updatePrestationStatut(
       organisation_id,
       description,
       statut,
+      prestataire_id,
       majeurs ( nom, prenom )
     `,
     )
@@ -99,6 +108,13 @@ export async function updatePrestationStatut(
 
   if (!existing) {
     return { success: false, error: "Prestation introuvable." };
+  }
+
+  if (
+    currentUser.role === "prestataire" &&
+    existing.prestataire_id !== currentUser.id
+  ) {
+    return { success: false, error: "Action non autorisée." };
   }
 
   const ancienStatut = existing.statut as StatutPrestation;
@@ -126,7 +142,7 @@ export async function updatePrestationStatut(
     return { success: false, error: error.message };
   }
 
-  if (currentUser?.role === "admin") {
+  if (currentUser.role === "admin") {
     try {
       await notifyPrestationStatutChange({
         organisationId: existing.organisation_id,
