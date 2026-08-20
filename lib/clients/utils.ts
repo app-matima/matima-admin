@@ -56,3 +56,19 @@ export function getStatutMajeurBadgeVariant(
       return "neutral";
   }
 }
+
+/** True si la date de fin de réduction est dans le futur. */
+export function reductionParrainageEstActive(
+  reductionFin: string | null | undefined,
+): boolean {
+  if (!reductionFin) {
+    return false;
+  }
+
+  const fin = new Date(reductionFin);
+  if (Number.isNaN(fin.getTime())) {
+    return false;
+  }
+
+  return fin.getTime() > Date.now();
+}

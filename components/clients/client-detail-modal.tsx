@@ -10,6 +10,7 @@ import {
   getMjpmNomComplet,
   getStatutMajeurBadgeVariant,
   getStatutMajeurLabel,
+  reductionParrainageEstActive,
 } from "@/lib/clients/utils";
 import {
   getNomMajeur,
@@ -192,6 +193,80 @@ export function ClientDetailModal({
                     </Badge>
                   </div>
                 ))}
+              </section>
+
+              <section className="space-y-3">
+                <h3 className="text-sm font-medium text-text-strong">
+                  Parrainage
+                </h3>
+                <div className="space-y-3 rounded-xl border border-border p-4">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <p className="mb-1 text-xs text-text-muted">
+                        Code de parrainage
+                      </p>
+                      <p className="font-mono text-sm font-medium text-text-strong">
+                        {detail.parrainage.codeParrainage ?? "—"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-xs text-text-muted">
+                        Parrainé par
+                      </p>
+                      <p className="text-sm font-medium text-text-strong">
+                        {detail.parrainage.parrainOrganisation?.nom ??
+                          "Aucun parrain"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-xs text-text-muted">Filleuls</p>
+                      <p className="text-sm font-medium text-text-strong">
+                        {detail.parrainage.nombreFilleuls}
+                        <span className="ml-1 font-normal text-text-muted">
+                          cabinet
+                          {detail.parrainage.nombreFilleuls > 1 ? "s" : ""}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2">
+                    <div>
+                      <p className="mb-1.5 text-xs text-text-muted">
+                        Réduction parrain
+                      </p>
+                      {reductionParrainageEstActive(
+                        detail.parrainage.reductionParrainFin,
+                      ) ? (
+                        <Badge variant="success">
+                          Active jusqu&apos;au{" "}
+                          {formatDateAffichage(
+                            detail.parrainage.reductionParrainFin,
+                          )}
+                        </Badge>
+                      ) : (
+                        <Badge variant="neutral">Inactive</Badge>
+                      )}
+                    </div>
+                    <div>
+                      <p className="mb-1.5 text-xs text-text-muted">
+                        Réduction filleul
+                      </p>
+                      {reductionParrainageEstActive(
+                        detail.parrainage.reductionFilleulFin,
+                      ) ? (
+                        <Badge variant="success">
+                          Active jusqu&apos;au{" "}
+                          {formatDateAffichage(
+                            detail.parrainage.reductionFilleulFin,
+                          )}
+                        </Badge>
+                      ) : (
+                        <Badge variant="neutral">Inactive</Badge>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </section>
 
               <section className="space-y-3">

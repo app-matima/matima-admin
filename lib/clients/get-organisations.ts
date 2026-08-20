@@ -4,18 +4,33 @@ import type { Plan } from "@/lib/clients/plans";
 import type {
   ClientDetail,
   ClientListItem,
+  ClientParrainage,
   ClientPrestationItem,
   MjpmProfile,
   ProtegesParStatut,
 } from "@/types/clients";
 
-const ORGANISATION_SELECT =
+const ORGANISATION_LIST_SELECT =
   "id, created_at, plan_id, plans!left(id, nom, prix_par_dossier)";
 
-interface OrganisationRow {
+const ORGANISATION_DETAIL_SELECT =
+  "id, created_at, plan_id, code_parrainage, parrain_organisation_id, reduction_parrain_fin, reduction_filleul_fin, plans!left(id, nom, prix_par_dossier)";
+
+interface OrganisationListRow {
   id: string;
   created_at: string;
   plan_id: string | null;
+  plans: PlanRow | PlanRow[] | null;
+}
+
+interface OrganisationDetailRow {
+  id: string;
+  created_at: string;
+  plan_id: string | null;
+  code_parrainage: string | null;
+  parrain_organisation_id: string | null;
+  reduction_parrain_fin: string | null;
+  reduction_filleul_fin: string | null;
   plans: PlanRow | PlanRow[] | null;
 }
 
@@ -126,7 +141,7 @@ export async function getAllClients(): Promise<ClientListItem[]> {
   const [organisationsResult, majeursResult, mjpmResult] = await Promise.all([
     supabase
       .from("organisations")
-      .select(ORGANISATION_SELECT)
+      .select(ORGANISATION_LIST_SELECT)
       .in("id", organisationIds)
       .order("created_at", { ascending: false }),
     supabase
@@ -145,7 +160,7 @@ export async function getAllClients(): Promise<ClientListItem[]> {
     return [];
   }
 
-  const organisations = (organisationsResult.data ?? []) as OrganisationRow[];
+  const organisations = (organisationsResult.data ?? []) as OrganisationListRow[];
   const majeurs = (majeursResult.data ?? []) as MajeurRow[];
   const mjpmUtilisateurs = (mjpmResult.data ?? []) as UtilisateurRow[];
 
@@ -198,10 +213,11 @@ export async function getClientDetail(
     mjpmResult,
     majeursResult,
     prestationsResult,
+    filleulsResult,
   ] = await Promise.all([
     supabase
       .from("organisations")
-      .select(ORGANISATION_SELECT)
+      .select(ORGANISATION_DETAIL_SELECT)
       .eq("id", organisationId)
       .single(),
     supabase
@@ -223,6 +239,10 @@ export async function getClientDetail(
       .eq("organisation_id", organisationId)
       .order("created_at", { ascending: false })
       .limit(5),
+    supabase
+      .from("organisations")
+      .select("id", { count: "exact", head: true })
+      .eq("parrain_organisation_id", organisationId),
   ]);
 
   if (organisationResult.error || !organisationResult.data) {
@@ -230,7 +250,11 @@ export async function getClientDetail(
     return null;
   }
 
-  const organisation = organisationResult.data as OrganisationRow;
+  if (filleulsResult.error) {
+    console.error("getClientDetail filleuls", filleulsResult.error);
+  }
+
+  const organisation = organisationResult.data as OrganisationDetailRow;
   const majeurs = (majeursResult.data ?? []) as { statut: string }[];
   const plan = resolvePlan(organisation.plan_id, organisation.plans);
 
@@ -244,6 +268,37 @@ export async function getClientDetail(
     mjpm = await enrichMjpmProfile(mjpmResult.data.id);
   }
 
+  let parrainOrganisation: ClientParrainage["parrainOrganisation"] = null;
+  if (organisation.parrain_organisation_id) {
+    const { data: parrain, error: parrainError } = await supabase
+      .from("organisations")
+      .select("id, nom")
+      .eq("id", organisation.parrain_organisation_id)
+      .maybeSingle();
+
+    if (parrainError) {
+      console.error("getClientDetail parrain", parrainError);
+    } else if (parrain) {
+      parrainOrganisation = {
+        id: parrain.id as string,
+        nom: (parrain.nom as string)?.trim() || "—",
+      };
+    }
+  }
+
+  const codeParrainage =
+    typeof organisation.code_parrainage === "string"
+      ? organisation.code_parrainage.trim() || null
+      : null;
+
+  const parrainage: ClientParrainage = {
+    codeParrainage,
+    parrainOrganisation,
+    nombreFilleuls: filleulsResult.count ?? 0,
+    reductionParrainFin: organisation.reduction_parrain_fin,
+    reductionFilleulFin: organisation.reduction_filleul_fin,
+  };
+
   return {
     organisationId: organisation.id,
     mjpm,
@@ -254,5 +309,6 @@ export async function getClientDetail(
     protegesParStatut,
     dernieresPrestations:
       (prestationsResult.data as ClientPrestationItem[] | null) ?? [],
+    parrainage,
   };
 }

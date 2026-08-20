@@ -36,6 +36,14 @@ export interface ClientPrestationItem {
     | null;
 }
 
+export interface ClientParrainage {
+  codeParrainage: string | null;
+  parrainOrganisation: { id: string; nom: string } | null;
+  nombreFilleuls: number;
+  reductionParrainFin: string | null;
+  reductionFilleulFin: string | null;
+}
+
 export interface ClientDetail {
   organisationId: string;
   mjpm: MjpmProfile | null;
@@ -45,6 +53,7 @@ export interface ClientDetail {
   dossiersActifs: number;
   protegesParStatut: ProtegesParStatut;
   dernieresPrestations: ClientPrestationItem[];
+  parrainage: ClientParrainage;
 }
 
 export const statutsMajeurModal: (keyof ProtegesParStatut)[] = [
