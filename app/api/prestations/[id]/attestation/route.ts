@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { getCurrentAdminUser } from "@/lib/admin/get-current-admin-user";
 import { generateAttestationPdf } from "@/lib/prestations/generate-attestation-pdf";
+import { getOrCreateDossierPrestationsGed } from "@/lib/prestations/get-or-create-dossier-prestations-ged";
 import { notifyPrestationStatutChange } from "@/lib/prestations/notify-prestation-statut-change";
 import { getNomMajeur } from "@/lib/prestations/utils";
 import { createAdminClient } from "@/lib/supabase/server";
@@ -143,6 +144,26 @@ export async function POST(
     return NextResponse.json({ error: uploadError.message }, { status: 500 });
   }
 
+  let gedDossierId: string;
+
+  try {
+    gedDossierId = await getOrCreateDossierPrestationsGed(supabase, {
+      organisationId: prestation.organisation_id,
+      majeurId: prestation.majeur_id,
+    });
+  } catch (error) {
+    console.error("attestation dossier prestations", error);
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Impossible de résoudre le dossier GED Prestations.",
+      },
+      { status: 500 },
+    );
+  }
+
   const { error: updateError } = await supabase
     .from("prestations_commandes")
     .update({
@@ -160,6 +181,7 @@ export async function POST(
   const { error: documentError } = await supabase.from("documents").insert({
     majeur_id: prestation.majeur_id,
     organisation_id: prestation.organisation_id,
+    ged_dossier_id: gedDossierId,
     type_document: "autre",
     nom_fichier: `attestation_${id}_${Date.now()}.pdf`,
     nom_original: "Attestation de prestation.pdf",
