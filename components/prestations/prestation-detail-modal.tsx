@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
@@ -34,12 +34,16 @@ export function PrestationDetailModal({
   canManageStatut = true,
 }: PrestationDetailModalProps) {
   const router = useRouter();
+  const devisInputRef = useRef<HTMLInputElement>(null);
   const [statut, setStatut] = useState<StatutPrestation | null>(null);
   const [statutFacturation, setStatutFacturation] =
     useState<StatutFacturation>("a_facturer");
   const [pennylaneInvoiceId, setPennylaneInvoiceId] = useState<string | null>(
     null,
   );
+  const [devisStoragePath, setDevisStoragePath] = useState<string | null>(null);
+  const [devisUploadEnCours, setDevisUploadEnCours] = useState(false);
+  const [devisErreur, setDevisErreur] = useState<string | null>(null);
   const [signatureOpen, setSignatureOpen] = useState(false);
 
   useEffect(() => {
@@ -47,6 +51,8 @@ export function PrestationDetailModal({
       setStatut(prestation.statut);
       setStatutFacturation(prestation.statut_facturation ?? "a_facturer");
       setPennylaneInvoiceId(prestation.pennylane_invoice_id ?? null);
+      setDevisStoragePath(prestation.devis_storage_path ?? null);
+      setDevisErreur(null);
     }
   }, [prestation]);
 
@@ -75,6 +81,7 @@ export function PrestationDetailModal({
   }
 
   const activePrestation = prestation;
+  const peutJoindreDevis = statut !== "en_attente";
 
   function handleAttestationSuccess() {
     setStatut("realise");
@@ -82,6 +89,56 @@ export function PrestationDetailModal({
     setSignatureOpen(false);
     router.refresh();
     onClose();
+  }
+
+  async function handleDevisSelected(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    if (file.type !== "application/pdf") {
+      setDevisErreur("Seuls les fichiers PDF sont acceptés.");
+      return;
+    }
+
+    setDevisErreur(null);
+    setDevisUploadEnCours(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(
+        `/api/prestations/${activePrestation.id}/devis`,
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      const result = (await response.json()) as {
+        success?: boolean;
+        devis_storage_path?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !result.success || !result.devis_storage_path) {
+        setDevisErreur(result.error ?? "Impossible de joindre le devis.");
+        return;
+      }
+
+      setDevisStoragePath(result.devis_storage_path);
+      router.refresh();
+    } catch {
+      setDevisErreur("Impossible de joindre le devis.");
+    } finally {
+      setDevisUploadEnCours(false);
+    }
   }
 
   return (
@@ -123,11 +180,14 @@ export function PrestationDetailModal({
           </div>
 
           <div className="flex-1 space-y-4 overflow-y-auto p-4">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs font-medium text-text-muted">Statut</span>
               <Badge variant={getStatutPrestationBadgeVariant(statut)}>
                 {getStatutPrestationLabel(statut)}
               </Badge>
+              {devisStoragePath && (
+                <Badge variant="info">Devis joint</Badge>
+              )}
             </div>
 
             <DetailField label="Protégé">
@@ -166,6 +226,47 @@ export function PrestationDetailModal({
             <DetailField label="Date de création">
               {formatDateTimeAffichage(activePrestation.created_at)}
             </DetailField>
+
+            {peutJoindreDevis && (
+              <DetailField label="Devis">
+                <div className="space-y-2">
+                  {devisStoragePath && (
+                    <a
+                      href={`/api/storage/sign?path=${encodeURIComponent(devisStoragePath)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex text-sm font-medium text-accent transition-colors hover:text-accent-hover"
+                    >
+                      Consulter le devis
+                    </a>
+                  )}
+                  <div>
+                    <input
+                      ref={devisInputRef}
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      className="hidden"
+                      onChange={(event) => void handleDevisSelected(event)}
+                    />
+                    <button
+                      type="button"
+                      disabled={devisUploadEnCours}
+                      onClick={() => devisInputRef.current?.click()}
+                      className="inline-flex w-full items-center justify-center rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium text-text-strong transition-colors hover:bg-page disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                    >
+                      {devisUploadEnCours
+                        ? "Envoi…"
+                        : devisStoragePath
+                          ? "Remplacer le devis"
+                          : "Joindre un devis"}
+                    </button>
+                  </div>
+                  {devisErreur && (
+                    <p className="text-sm text-[#DC2626]">{devisErreur}</p>
+                  )}
+                </div>
+              </DetailField>
+            )}
 
             {statut === "realise" && (
               <PrestationFacturationForm

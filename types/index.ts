@@ -26,6 +26,7 @@ export interface PrestationCommande {
   pennylane_invoice_id?: string | null;
   prestataire_id?: string | null;
   attestation_url?: string | null;
+  devis_storage_path?: string | null;
   created_at?: string;
 }
 
