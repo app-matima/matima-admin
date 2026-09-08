@@ -42,6 +42,9 @@ export function PrestationDetailModal({
     null,
   );
   const [devisStoragePath, setDevisStoragePath] = useState<string | null>(null);
+  const [devisSigneStoragePath, setDevisSigneStoragePath] = useState<
+    string | null
+  >(null);
   const [devisUploadEnCours, setDevisUploadEnCours] = useState(false);
   const [devisErreur, setDevisErreur] = useState<string | null>(null);
   const [signatureOpen, setSignatureOpen] = useState(false);
@@ -52,6 +55,7 @@ export function PrestationDetailModal({
       setStatutFacturation(prestation.statut_facturation ?? "a_facturer");
       setPennylaneInvoiceId(prestation.pennylane_invoice_id ?? null);
       setDevisStoragePath(prestation.devis_storage_path ?? null);
+      setDevisSigneStoragePath(prestation.devis_signe_storage_path ?? null);
       setDevisErreur(null);
     }
   }, [prestation]);
@@ -185,9 +189,11 @@ export function PrestationDetailModal({
               <Badge variant={getStatutPrestationBadgeVariant(statut)}>
                 {getStatutPrestationLabel(statut)}
               </Badge>
-              {devisStoragePath && (
+              {devisSigneStoragePath ? (
+                <Badge variant="success">Devis signé</Badge>
+              ) : devisStoragePath ? (
                 <Badge variant="info">Devis joint</Badge>
-              )}
+              ) : null}
             </div>
 
             <DetailField label="Protégé">
@@ -230,15 +236,35 @@ export function PrestationDetailModal({
             {peutJoindreDevis && (
               <DetailField label="Devis">
                 <div className="space-y-2">
-                  {devisStoragePath && (
-                    <a
-                      href={`/api/storage/sign?path=${encodeURIComponent(devisStoragePath)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex text-sm font-medium text-accent transition-colors hover:text-accent-hover"
-                    >
-                      Consulter le devis
-                    </a>
+                  {(devisSigneStoragePath || devisStoragePath) && (
+                    <div className="flex flex-col gap-1.5">
+                      {devisSigneStoragePath && (
+                        <a
+                          href={`/api/storage/sign?path=${encodeURIComponent(devisSigneStoragePath)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex text-sm font-medium text-accent transition-colors hover:text-accent-hover"
+                        >
+                          Consulter le devis signé
+                        </a>
+                      )}
+                      {devisStoragePath && (
+                        <a
+                          href={`/api/storage/sign?path=${encodeURIComponent(devisStoragePath)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`inline-flex text-sm font-medium transition-colors hover:text-accent-hover ${
+                            devisSigneStoragePath
+                              ? "text-text-muted"
+                              : "text-accent"
+                          }`}
+                        >
+                          {devisSigneStoragePath
+                            ? "Consulter le devis original"
+                            : "Consulter le devis"}
+                        </a>
+                      )}
+                    </div>
                   )}
                   <div>
                     <input
@@ -306,6 +332,8 @@ export function PrestationDetailModal({
               <PrestationActions
                 prestationId={activePrestation.id}
                 statut={statut}
+                devisStoragePath={devisStoragePath}
+                devisSigneStoragePath={devisSigneStoragePath}
                 layout="modal"
                 onStatutUpdated={setStatut}
                 onMarquerRealisee={() => setSignatureOpen(true)}

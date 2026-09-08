@@ -4,6 +4,10 @@ import { revalidatePath } from "next/cache";
 import { getCurrentAdminUser } from "@/lib/admin/get-current-admin-user";
 import { notifyPrestationStatutChange } from "@/lib/prestations/notify-prestation-statut-change";
 import {
+  devisBloqueDemarrage,
+  MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER,
+} from "@/lib/prestations/utils";
+import {
   getStatutFactureClient,
   mapPennylaneToStatutFacturation,
   rechercherFacturesCorrespondantes,
@@ -95,6 +99,8 @@ export async function updatePrestationStatut(
       description,
       statut,
       prestataire_id,
+      devis_storage_path,
+      devis_signe_storage_path,
       majeurs ( nom, prenom )
     `,
     )
@@ -121,6 +127,19 @@ export async function updatePrestationStatut(
 
   if (ancienStatut === statut) {
     return { success: true };
+  }
+
+  if (
+    statut === "en_cours" &&
+    devisBloqueDemarrage({
+      devis_storage_path: existing.devis_storage_path,
+      devis_signe_storage_path: existing.devis_signe_storage_path,
+    })
+  ) {
+    return {
+      success: false,
+      error: MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER,
+    };
   }
 
   const updatePayload: {

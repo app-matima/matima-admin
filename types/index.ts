@@ -27,6 +27,8 @@ export interface PrestationCommande {
   prestataire_id?: string | null;
   attestation_url?: string | null;
   devis_storage_path?: string | null;
+  devis_signe_storage_path?: string | null;
+  devis_signe_le?: string | null;
   created_at?: string;
 }
 

@@ -202,3 +202,16 @@ export function getPrestationsHistorique<
       (prestation.statut === "realise" || prestation.statut === "annule"),
   );
 }
+
+export const MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER =
+  "Ce devis doit être signé par le MJPM avant de démarrer la prestation";
+
+/** True si un devis a été envoyé mais n'est pas encore signé par le MJPM. */
+export function devisBloqueDemarrage(prestation: {
+  devis_storage_path?: string | null;
+  devis_signe_storage_path?: string | null;
+}): boolean {
+  const devisEnvoye = Boolean(prestation.devis_storage_path?.trim());
+  const devisSigne = Boolean(prestation.devis_signe_storage_path?.trim());
+  return devisEnvoye && !devisSigne;
+}

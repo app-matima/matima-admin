@@ -1,14 +1,11 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Badge } from "@/components/shared/badge";
 import { updatePrestationStatut } from "@/lib/prestations/actions";
 import {
-  formatHeureSouhaitee,
-  getStatutPrestationBadgeVariant,
-  getStatutPrestationLabel,
+  devisBloqueDemarrage,
+  MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER,
 } from "@/lib/prestations/utils";
 import { cn } from "@/lib/utils";
 import type { StatutPrestation } from "@/types";
@@ -16,6 +13,8 @@ import type { StatutPrestation } from "@/types";
 interface PrestationActionsProps {
   prestationId: string;
   statut: StatutPrestation;
+  devisStoragePath?: string | null;
+  devisSigneStoragePath?: string | null;
   layout?: "inline" | "modal";
   onStatutUpdated?: (statut: StatutPrestation) => void;
   onMarquerRealisee?: () => void;
@@ -30,6 +29,8 @@ const dangerButtonClass =
 export function PrestationActions({
   prestationId,
   statut,
+  devisStoragePath = null,
+  devisSigneStoragePath = null,
   layout = "inline",
   onStatutUpdated,
   onMarquerRealisee,
@@ -38,7 +39,17 @@ export function PrestationActions({
   const [isPending, startTransition] = useTransition();
   const [erreur, setErreur] = useState<string | null>(null);
 
+  const demarrageBloqueParDevis = devisBloqueDemarrage({
+    devis_storage_path: devisStoragePath,
+    devis_signe_storage_path: devisSigneStoragePath,
+  });
+
   function handleAction(nouveauStatut: StatutPrestation) {
+    if (nouveauStatut === "en_cours" && demarrageBloqueParDevis) {
+      setErreur(MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER);
+      return;
+    }
+
     setErreur(null);
     startTransition(async () => {
       const result = await updatePrestationStatut(prestationId, nouveauStatut);
@@ -57,6 +68,7 @@ export function PrestationActions({
     isPending,
     layout,
     onMarquerRealisee,
+    demarrageBloqueParDevis,
   );
 
   if (actions.length === 0) {
@@ -73,6 +85,11 @@ export function PrestationActions({
       >
         {actions}
       </div>
+      {demarrageBloqueParDevis && statut === "confirme" ? (
+        <p className="text-xs text-[#B45309]">
+          {MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER}
+        </p>
+      ) : null}
       {erreur && <p className="text-xs text-[#DC2626]">{erreur}</p>}
     </div>
   );
@@ -96,7 +113,8 @@ function getActionsForStatut(
   handleAction: (statut: StatutPrestation) => void,
   disabled: boolean,
   layout: "inline" | "modal",
-  onMarquerRealisee?: () => void,
+  onMarquerRealisee: (() => void) | undefined,
+  demarrageBloqueParDevis: boolean,
 ) {
   switch (statut) {
     case "en_attente":
@@ -125,7 +143,12 @@ function getActionsForStatut(
         <button
           key="demarrer"
           type="button"
-          disabled={disabled}
+          disabled={disabled || demarrageBloqueParDevis}
+          title={
+            demarrageBloqueParDevis
+              ? MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER
+              : undefined
+          }
           onClick={() => handleAction("en_cours")}
           className={getButtonClass("primary", layout)}
         >

@@ -13,7 +13,7 @@ export async function getPlanningData(): Promise<PlanningData> {
     supabase
       .from("prestations_commandes")
       .select(
-        "id, organisation_id, majeur_id, description, date_souhaitee, date_acceptee, prestataire_id, heure_souhaitee, adresse_intervention, instructions, statut, created_at, majeurs(nom, prenom), organisations(nom)",
+        "id, organisation_id, majeur_id, description, date_souhaitee, date_acceptee, prestataire_id, heure_souhaitee, adresse_intervention, instructions, statut, devis_storage_path, devis_signe_storage_path, devis_signe_le, created_at, majeurs(nom, prenom), organisations(nom)",
       )
       .in("statut", ["en_attente", "confirme", "en_cours", "realise"])
       .not("date_souhaitee", "is", null)

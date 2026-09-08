@@ -7,11 +7,13 @@ import { Badge } from "@/components/shared/badge";
 import { SignatureModal } from "@/components/prestations/signature-modal";
 import { updatePrestationStatut } from "@/lib/prestations/actions";
 import {
+  devisBloqueDemarrage,
   formatHeureSouhaitee,
   getNomMajeur,
   getNomOrganisation,
   getStatutPrestationBadgeVariant,
   getStatutPrestationLabel,
+  MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER,
 } from "@/lib/prestations/utils";
 import { formatDateAffichage, formatDateTimeAffichage } from "@/lib/utils/date";
 import { cn } from "@/lib/utils";
@@ -70,8 +72,14 @@ export function PrestataireDetailModal({
   }
 
   const activePrestation = prestation;
+  const demarrageBloqueParDevis = devisBloqueDemarrage(activePrestation);
 
   function handleStatutUpdate(nouveauStatut: StatutPrestation) {
+    if (nouveauStatut === "en_cours" && demarrageBloqueParDevis) {
+      setErreur(MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER);
+      return;
+    }
+
     setErreur(null);
     startTransition(async () => {
       const result = await updatePrestationStatut(
@@ -193,7 +201,12 @@ export function PrestataireDetailModal({
                   <>
                     <button
                       type="button"
-                      disabled={isPending}
+                      disabled={isPending || demarrageBloqueParDevis}
+                      title={
+                        demarrageBloqueParDevis
+                          ? MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER
+                          : undefined
+                      }
                       onClick={() => handleStatutUpdate("en_cours")}
                       className={buttonClass("primary")}
                     >
@@ -220,6 +233,11 @@ export function PrestataireDetailModal({
                   </button>
                 )}
               </div>
+              {demarrageBloqueParDevis && statut === "confirme" ? (
+                <p className="mt-2 text-xs text-[#B45309]">
+                  {MESSAGE_DEVIS_NON_SIGNE_POUR_DEMARRER}
+                </p>
+              ) : null}
               {erreur && <p className="mt-2 text-xs text-[#DC2626]">{erreur}</p>}
             </div>
           )}
