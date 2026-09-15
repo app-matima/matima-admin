@@ -20,6 +20,54 @@ export function formatDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+/** Lundi (inclus) de la semaine ISO-like (lun→dim) contenant `date`. */
+export function getWeekStart(date: Date = new Date()): Date {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = result.getDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  result.setDate(result.getDate() + offset);
+  return result;
+}
+
+export function addDays(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+export function getWeekDateKeys(weekStart: Date): string[] {
+  return Array.from({ length: 7 }, (_, index) =>
+    formatDateKey(addDays(weekStart, index)),
+  );
+}
+
+export function parseDateKey(dateKey: string): Date {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+export function formatWeekRangeLabel(weekStart: Date): string {
+  const weekEnd = addDays(weekStart, 6);
+  const sameMonth = weekStart.getMonth() === weekEnd.getMonth();
+
+  if (sameMonth) {
+    return `${weekStart.getDate()} – ${weekEnd.toLocaleDateString("fr-FR", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    })}`;
+  }
+
+  const debut = weekStart.toLocaleDateString("fr-FR", {
+    day: "numeric",
+    month: "short",
+  });
+  const fin = weekEnd.toLocaleDateString("fr-FR", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+  return `${debut} – ${fin}`;
+}
+
 export function dateStringToKey(dateStr: string): string {
   return dateStr.split("T")[0] ?? dateStr;
 }
@@ -156,5 +204,9 @@ export const planningEventStyles: Record<
   conge: {
     badge: "bg-[#FEF2F2] text-[#991B1B] hover:bg-[#FEE2E2]",
     dot: "bg-[#DC2626]",
+  },
+  tache: {
+    badge: "bg-[#EEF2FF] text-[#3730A3] hover:bg-[#E0E7FF]",
+    dot: "bg-[#6366F1]",
   },
 };

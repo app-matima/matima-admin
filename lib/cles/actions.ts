@@ -40,6 +40,8 @@ export async function updateCleStatut(
   }
 
   revalidatePath("/cles");
+  revalidatePath("/m/cles");
+  revalidatePath(`/m/cles/${cleId}`);
 
   return { success: true };
 }
@@ -66,6 +68,8 @@ export async function updateCleNotes(
   }
 
   revalidatePath("/cles");
+  revalidatePath("/m/cles");
+  revalidatePath(`/m/cles/${cleId}`);
 
   return { success: true };
 }

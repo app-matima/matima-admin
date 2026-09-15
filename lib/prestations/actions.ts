@@ -71,6 +71,8 @@ export async function acceptPrestation(
   revalidatePath("/prestations");
   revalidatePath("/planning");
   revalidatePath("/dashboard");
+  revalidatePath("/m/prestations");
+  revalidatePath(`/m/prestations/${id}`);
 
   return { success: true };
 }
@@ -178,6 +180,8 @@ export async function updatePrestationStatut(
   revalidatePath("/prestations");
   revalidatePath("/dashboard");
   revalidatePath("/planning");
+  revalidatePath("/m/prestations");
+  revalidatePath(`/m/prestations/${id}`);
 
   return { success: true };
 }

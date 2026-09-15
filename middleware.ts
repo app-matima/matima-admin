@@ -8,6 +8,7 @@ import {
   isPrestataireRestrictedPath,
   PRESTATAIRE_HOME_PATH,
 } from "@/lib/navigation/admin-nav-items";
+import { secureSessionCookieOptions } from "@/lib/supabase/secure-session-cookie-options";
 import type { AdminRole } from "@/types/admin";
 
 const PUBLIC_AUTH_ROUTES = ["/auth/login", "/auth/accept-invite"];
@@ -65,13 +66,25 @@ export async function middleware(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value),
-          );
+          // Forme objet (1 arg) : RequestCookies n'a pas de SameSite ;
+          // la Response pose SameSite=Lax explicitement.
+          cookiesToSet.forEach(({ name, value }) => {
+            request.cookies.set({ name, value });
+          });
           supabaseResponse = NextResponse.next({ request });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options),
-          );
+          cookiesToSet.forEach(({ name, value, options }) => {
+            const secureOptions = secureSessionCookieOptions(options);
+            supabaseResponse.cookies.set({
+              name,
+              value,
+              path: secureOptions.path ?? "/",
+              sameSite: "lax",
+              httpOnly: secureOptions.httpOnly,
+              maxAge: secureOptions.maxAge,
+              expires: secureOptions.expires,
+              secure: secureOptions.secure,
+            });
+          });
         },
       },
     },
@@ -117,6 +130,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|sw\\.js|manifest\\.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

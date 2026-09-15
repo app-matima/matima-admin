@@ -9,6 +9,15 @@ export interface Conge {
   notes: string | null;
 }
 
+export interface TacheAdmin {
+  id: string;
+  admin_user_id: string;
+  titre: string;
+  date: string;
+  notes: string | null;
+  created_at?: string;
+}
+
 export interface PlanningPrestation extends PrestationAvecRelations {
   date_acceptee: string | null;
   prestataire_id: string | null;
@@ -17,7 +26,8 @@ export interface PlanningPrestation extends PrestationAvecRelations {
 export type PlanningEventKind =
   | "prestation_confirmed"
   | "prestation_pending"
-  | "conge";
+  | "conge"
+  | "tache";
 
 export interface PlanningEvent {
   id: string;
@@ -26,6 +36,7 @@ export interface PlanningEvent {
   label: string;
   prestation?: PlanningPrestation;
   conge?: Conge;
+  tache?: TacheAdmin;
 }
 
 export interface CalendarDay {

@@ -210,6 +210,8 @@ export async function POST(
   revalidatePath("/prestations");
   revalidatePath("/planning");
   revalidatePath("/dashboard");
+  revalidatePath("/m/prestations");
+  revalidatePath(`/m/prestations/${id}`);
 
   return NextResponse.json({
     success: true,

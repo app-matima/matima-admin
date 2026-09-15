@@ -187,3 +187,40 @@ export async function getClesData(): Promise<OrganisationClesGroupe[]> {
     return nomA.localeCompare(nomB, "fr");
   });
 }
+
+export interface CleDetailMobile {
+  cleId: string;
+  majeurId: string;
+  nom: string;
+  prenom: string;
+  statut: StatutCle;
+  notes: string | null;
+  mjpmNom: string;
+}
+
+export async function getCleById(
+  cleId: string,
+): Promise<CleDetailMobile | null> {
+  const groupes = await getClesData();
+
+  for (const groupe of groupes) {
+    const protege = groupe.proteges.find((item) => item.cleId === cleId);
+    if (protege) {
+      const mjpmNom = groupe.mjpm
+        ? `${groupe.mjpm.prenom} ${groupe.mjpm.nom}`.trim() || "—"
+        : "—";
+
+      return {
+        cleId: protege.cleId,
+        majeurId: protege.majeurId,
+        nom: protege.nom,
+        prenom: protege.prenom,
+        statut: protege.statut,
+        notes: protege.notes,
+        mjpmNom,
+      };
+    }
+  }
+
+  return null;
+}
