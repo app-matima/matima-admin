@@ -226,6 +226,20 @@ export async function validerScanGedDocument(params: {
   return data;
 }
 
+export async function supprimerScanGedDocument(
+  documentId: string,
+): Promise<void> {
+  const response = await fetch(`/api/scan-ged/documents/${documentId}`, {
+    method: "DELETE",
+  });
+
+  const data = (await response.json()) as { error?: string; ok?: boolean };
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "Impossible de supprimer le document.");
+  }
+}
+
 export async function validerTousScanGedDocuments(
   documents: {
     documentId: string;

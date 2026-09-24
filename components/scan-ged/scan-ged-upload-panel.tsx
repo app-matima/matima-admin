@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Eye, FileUp, Loader2, Sparkles, X } from "lucide-react";
+import { Eye, FileUp, Loader2, Sparkles, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
 import { GedDossierSelect } from "@/components/scan-ged/ged-dossier-select";
 import { isImage, isPdf } from "@/lib/documents/document-utils";
@@ -16,6 +16,7 @@ import {
 } from "@/lib/documents/ged-dossier-utils";
 import {
   fetchScanGedContext,
+  supprimerScanGedDocument,
   uploadScanGedDocuments,
   validerScanGedDocument,
   validerTousScanGedDocuments,
@@ -227,6 +228,9 @@ export function ScanGedUploadPanel({
   const [validationDocumentId, setValidationDocumentId] = useState<
     string | null
   >(null);
+  const [suppressionDocumentId, setSuppressionDocumentId] = useState<
+    string | null
+  >(null);
   const [erreur, setErreur] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [glisserActif, setGlisserActif] = useState(false);
@@ -357,6 +361,35 @@ export function ScanGedUploadPanel({
       );
     } finally {
       setValidationDocumentId(null);
+    }
+  }
+
+  async function handleSupprimerLigne(ligne: LigneDocument) {
+    const confirme = window.confirm(
+      `Supprimer définitivement « ${ligne.nom} » ?\n\nLe fichier sera retiré de l'attente et du Storage.`,
+    );
+    if (!confirme) {
+      return;
+    }
+
+    setSuppressionDocumentId(ligne.documentId);
+    setErreur(null);
+    setMessage(null);
+
+    try {
+      await supprimerScanGedDocument(ligne.documentId);
+      setLignes((courantes) =>
+        courantes.filter((item) => item.documentId !== ligne.documentId),
+      );
+      setMessage("Document supprimé.");
+    } catch (error) {
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de supprimer le document.",
+      );
+    } finally {
+      setSuppressionDocumentId(null);
     }
   }
 
@@ -508,7 +541,9 @@ export function ScanGedUploadPanel({
           <button
             type="button"
             onClick={() => void handleValiderTout()}
-            disabled={validationEnCours || importEnCours}
+            disabled={
+              validationEnCours || importEnCours || suppressionDocumentId !== null
+            }
             className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
             {validationEnCours ? "Validation…" : "Tout valider"}
@@ -660,9 +695,30 @@ export function ScanGedUploadPanel({
                     </button>
                     <button
                       type="button"
+                      onClick={() => void handleSupprimerLigne(ligne)}
+                      disabled={
+                        suppressionDocumentId === ligne.documentId ||
+                        validationDocumentId === ligne.documentId ||
+                        validationEnCours ||
+                        importEnCours
+                      }
+                      className="rounded-lg border border-[#FECACA] px-3 py-2 text-sm font-medium text-[#991B1B] transition-colors hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {suppressionDocumentId === ligne.documentId ? (
+                        "Suppression…"
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5">
+                          <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                          Supprimer
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void handleValiderLigne(ligne)}
                       disabled={
                         validationDocumentId === ligne.documentId ||
+                        suppressionDocumentId === ligne.documentId ||
                         validationEnCours ||
                         !lignePreteAValider(ligne)
                       }

@@ -221,11 +221,27 @@ async function classifierPagesParRendu(
 
       const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
       const moyenne = moyenneRgbDepuisPixels(imageData.data);
-      types.push(classifierCouleurMoyenne(moyenne));
+      const type = classifierCouleurMoyenne(moyenne);
+      types.push(type);
+
+      // TEMP debug — retirer après calibration des seuils rouge/blanc
+      console.log(
+        `[split-pdf] page ${numero}/${pdf.numPages} → RGB(` +
+          `${moyenne.r.toFixed(1)}, ${moyenne.g.toFixed(1)}, ${moyenne.b.toFixed(1)})` +
+          ` → ${type}`,
+      );
 
       canvasFactory.destroy(canvasAndContext);
       page.cleanup();
     }
+
+    // TEMP debug — résumé
+    const nbBlanc = types.filter((t) => t === "blanc").length;
+    const nbRouge = types.filter((t) => t === "rouge").length;
+    const nbContenu = types.filter((t) => t === "contenu").length;
+    console.log(
+      `[split-pdf] résumé ${pdf.numPages} pages → blanc=${nbBlanc} rouge=${nbRouge} contenu=${nbContenu}`,
+    );
   } finally {
     await pdf.destroy();
   }
