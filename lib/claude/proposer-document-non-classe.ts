@@ -164,11 +164,18 @@ function construirePrompt(params: ProposerDocumentParams): string {
   return `Tu es un assistant de classement documentaire pour un logiciel MJPM en France.
 
 Analyse le document joint et le nom du fichier, puis propose :
-1. Le protégé (majeur) le plus probable parmi la liste
+1. Le protégé (majeur) concerné — UNIQUEMENT parmi la liste « Protégés actifs » ci-dessous
 2. Le dossier existant le plus adapté (dossier_id) — à N'IMPORTE QUEL niveau de l'arborescence listée, pas seulement à la racine
 3. Si aucun dossier existant ne convient vraiment, propose un NOUVEAU chemin complet depuis la racine (nouveau_chemin_dossier : tableau de noms de dossiers, un segment par niveau)
 4. Un nom de fichier court, clair et descriptif (avec extension)
 5. Ta confiance globale ("haute" ou "basse") sur l'identification du protégé ET du dossier précis (ou du nouveau chemin)
+
+Identification du protégé (CRITIQUE — lire avant de choisir majeur_id) :
+- Le majeur_id DOIT être l'UUID exact d'un protégé de la liste « Protégés actifs ». N'invente jamais d'id. N'utilise jamais un nom hors liste.
+- IGNORE systématiquement tout nom associé à des mentions du type : « tuteur », « curateur », « curatelle », « tutelle », « mandataire judiciaire », « MJPM », « représentant légal », « pour le compte de », en-tête / signature / cachet du cabinet. Ce n'est PAS le protégé recherché (c'est souvent le MJPM visible en en-tête).
+- Cherche plutôt le nom du SUJET du document : mentions « concernant », « à l'attention de », « bénéficiaire », « assuré », « patient », « allocataire », « destinataire », objet du courrier (« M./Mme … »), ou le nom qui apparaît comme personne principale du contenu (pas le signataire administratif).
+- Si, après avoir écarté le nom du MJPM / représentant légal, aucun nom du document ne correspond CLAIREMENT à un protégé de la liste, renvoie majeur_id: null. Ne devine PAS le protégé le plus « proche » ou le plus probable au hasard. Mieux vaut null qu'une attribution erronée.
+- confiance = "basse" (ou majeur_id null) dès que l'identité du protégé est ambiguë.
 
 Méthode de raisonnement (à appliquer avant de répondre) :
 Réfléchis d'abord au TYPE de document (pièce d'identité, facture, courrier officiel, document médical, relevé bancaire, document juridique...) avant de choisir le dossier. Exemples : une carte d'identité ou un passeport doit aller dans un dossier lié à l'identité/état civil, jamais dans un dossier de factures. Un relevé bancaire va dans un dossier lié à la banque, jamais dans un dossier de santé. Si le type de document ne correspond à AUCUN dossier existant, propose TOUJOURS un nouveau dossier plutôt que de forcer un mauvais classement — c'est préférable à une erreur de classement sur un document sensible.
@@ -188,11 +195,12 @@ Règles :
 - Ne mets pas dossier_id et nouveau_chemin_dossier en même temps
 - nouveau_chemin_dossier doit être un tableau JSON de strings (1 à 4 segments), jamais null si tu proposes une création
 - confiance = "haute" uniquement si tu es sûr à la fois du protégé ET du dossier (ou chemin) précis ; sinon "basse"
+- Si majeur_id est null, dossier_id et nouveau_chemin_dossier doivent aussi être null (pas de classement dossier sans protégé)
 
 Réponds UNIQUEMENT en JSON valide, sans markdown :
-{"majeur_id":"uuid","dossier_id":"uuid ou null","nouveau_chemin_dossier":["Segment 1","Segment 2"] ou null,"nom_fichier":"nom_suggere.pdf","confiance":"haute ou basse"}
+{"majeur_id":"uuid ou null","dossier_id":"uuid ou null","nouveau_chemin_dossier":["Segment 1","Segment 2"] ou null,"nom_fichier":"nom_suggere.pdf","confiance":"haute ou basse"}
 
-Protégés actifs :
+Protégés actifs (seules valeurs autorisées pour majeur_id) :
 ${majeursListe}
 
 Dossiers existants par protégé (chemin complet depuis la racine) :
