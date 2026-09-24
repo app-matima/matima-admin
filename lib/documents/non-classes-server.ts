@@ -27,13 +27,10 @@ interface MajeurRow {
   prenom: string;
 }
 
-interface EntreeNonClasse {
+interface EntreeTeleversee {
   nom: string;
   typeDocument: string;
   bytes: Uint8Array;
-}
-
-interface EntreeTeleversee extends EntreeNonClasse {
   storagePath: string;
 }
 
@@ -44,61 +41,33 @@ interface ContexteTraitement {
   adminClient: SupabaseClient;
 }
 
-function estFichierAccepte(type: string, nom: string): boolean {
-  if (type === "application/pdf" || nom.toLowerCase().endsWith(".pdf")) {
-    return true;
-  }
-
-  return type.startsWith("image/");
-}
-
 function estPdf(type: string, nom: string): boolean {
   return type === "application/pdf" || nom.toLowerCase().endsWith(".pdf");
 }
 
-async function preparerEntreesDepuisFichier(
-  fichier: File,
-): Promise<EntreeNonClasse[]> {
-  const typeDocument = fichier.type || "application/octet-stream";
-  const nom = fichier.name;
-
-  if (!estFichierAccepte(typeDocument, nom)) {
-    throw new Error(`Format non supporté : ${nom}`);
-  }
-
-  const buffer = new Uint8Array(await fichier.arrayBuffer());
-
-  if (estPdf(typeDocument, nom)) {
-    const segments = await decouperPdfAuxPagesBlanches(buffer, nom);
-    return segments.map((segment) => ({
-      nom: segment.nom,
-      typeDocument: "application/pdf",
-      bytes: segment.bytes,
-    }));
-  }
-
-  return [{ nom, typeDocument, bytes: buffer }];
+function nomDepuisStoragePath(storagePath: string): string {
+  const dernier = storagePath.split("/").pop() ?? "document";
+  // Retire le préfixe timestamp_uuid_ éventuel → garde un nom lisible
+  const sansPrefixe = dernier.replace(/^\d+_[0-9a-f-]+_/i, "");
+  return sansPrefixe || dernier;
 }
 
-async function televerserEntree(
-  entree: EntreeNonClasse,
-  organisationId: string,
+async function telechargerDepuisStorage(
   adminClient: SupabaseClient,
-): Promise<EntreeTeleversee> {
-  const storagePath = buildInboxStoragePath(organisationId, entree.nom);
-
-  const { error: uploadError } = await adminClient.storage
+  storagePath: string,
+): Promise<{ bytes: Uint8Array; typeDocument: string }> {
+  const { data, error } = await adminClient.storage
     .from(BUCKET)
-    .upload(storagePath, entree.bytes, {
-      contentType: entree.typeDocument,
-      upsert: false,
-    });
+    .download(storagePath);
 
-  if (uploadError) {
-    throw new Error(uploadError.message);
+  if (error || !data) {
+    throw new Error(error?.message ?? "Impossible de télécharger le document.");
   }
 
-  return { ...entree, storagePath };
+  const bytes = new Uint8Array(await data.arrayBuffer());
+  const typeDocument = data.type || "application/octet-stream";
+
+  return { bytes, typeDocument };
 }
 
 async function proposerDepuisBytes(params: {
@@ -170,8 +139,158 @@ async function insererDocumentAvecProposition(
   return data as DocumentNonClasse;
 }
 
-export async function traiterFichiersNonClasse(params: {
-  fichiers: File[];
+/**
+ * Pour un fichier déjà en inbox Storage : découpe PDF si besoin, classifie, insert.
+ * Les segments PDF sont ré-uploadés en inbox ; l'original multi-pages est retiré.
+ */
+async function preparerEntreesDepuisStoragePath(
+  storagePath: string,
+  organisationId: string,
+  adminClient: SupabaseClient,
+): Promise<EntreeTeleversee[]> {
+  const prefixeInbox = `${organisationId}/inbox/`;
+  if (
+    !storagePath ||
+    storagePath.includes("..") ||
+    !storagePath.startsWith(prefixeInbox)
+  ) {
+    throw new Error("Chemin invalide (inbox organisation uniquement).");
+  }
+
+  const { data: documentExistant, error: lectureExistantError } =
+    await adminClient
+      .from("documents")
+      .select("id")
+      .eq("storage_path", storagePath)
+      .maybeSingle();
+
+  if (lectureExistantError) {
+    throw new Error(lectureExistantError.message);
+  }
+
+  if (documentExistant) {
+    throw new Error("Une ligne documents existe déjà pour ce fichier.");
+  }
+
+  const telecharge = await telechargerDepuisStorage(adminClient, storagePath);
+  const nom = nomDepuisStoragePath(storagePath);
+  let typeDocument = telecharge.typeDocument;
+
+  if (estPdf(typeDocument, nom)) {
+    typeDocument = "application/pdf";
+  }
+
+  if (!estPdf(typeDocument, nom)) {
+    return [
+      {
+        nom,
+        typeDocument,
+        bytes: telecharge.bytes,
+        storagePath,
+      },
+    ];
+  }
+
+  const segments = await decouperPdfAuxPagesBlanches(telecharge.bytes, nom);
+
+  if (segments.length <= 1) {
+    const unique = segments[0];
+    return [
+      {
+        nom: unique?.nom ?? nom,
+        typeDocument: "application/pdf",
+        bytes: unique?.bytes ?? telecharge.bytes,
+        storagePath,
+      },
+    ];
+  }
+
+  const entrees: EntreeTeleversee[] = [];
+
+  for (const segment of segments) {
+    const cheminSegment = buildInboxStoragePath(organisationId, segment.nom);
+    const { error: uploadError } = await adminClient.storage
+      .from(BUCKET)
+      .upload(cheminSegment, segment.bytes, {
+        contentType: "application/pdf",
+        upsert: false,
+      });
+
+    if (uploadError) {
+      throw new Error(uploadError.message);
+    }
+
+    entrees.push({
+      nom: segment.nom,
+      typeDocument: "application/pdf",
+      bytes: segment.bytes,
+      storagePath: cheminSegment,
+    });
+  }
+
+  await adminClient.storage.from(BUCKET).remove([storagePath]);
+
+  return entrees;
+}
+
+export async function creerUrlUploadSigneInbox(params: {
+  organisationId: string;
+  nom: string;
+  typeDocument?: string;
+}): Promise<{
+  storagePath: string;
+  token: string;
+  signedUrl: string;
+  path: string;
+}> {
+  const adminClient = createAdminClient();
+  const storagePath = buildInboxStoragePath(
+    params.organisationId,
+    params.nom.trim() || "document",
+  );
+
+  const { data, error } = await adminClient.storage
+    .from(BUCKET)
+    .createSignedUploadUrl(storagePath);
+
+  if (error || !data) {
+    throw new Error(
+      error?.message ?? "Impossible de générer l'URL d'upload signée.",
+    );
+  }
+
+  return {
+    storagePath: data.path || storagePath,
+    token: data.token,
+    signedUrl: data.signedUrl,
+    path: data.path || storagePath,
+  };
+}
+
+export async function rollbackStoragePathsInbox(
+  storagePaths: string[],
+  organisationId: string,
+): Promise<void> {
+  const adminClient = createAdminClient();
+  const prefixeInbox = `${organisationId}/inbox/`;
+  const chemins = storagePaths
+    .map((path) => path.trim())
+    .filter(
+      (path) =>
+        path.length > 0 &&
+        !path.includes("..") &&
+        path.startsWith(prefixeInbox),
+    );
+
+  if (chemins.length === 0) {
+    return;
+  }
+
+  await adminClient.storage.from(BUCKET).remove(chemins);
+}
+
+export async function classerDocumentsInboxDepuisStoragePaths(params: {
+  storagePaths: string[];
   organisationId: string;
   dossiers: DossierOrganisationRow[];
   majeurs: MajeurRow[];
@@ -185,16 +304,20 @@ export async function traiterFichiersNonClasse(params: {
   };
 
   const erreurs: string[] = [];
-  const entrees: EntreeNonClasse[] = [];
+  const entrees: EntreeTeleversee[] = [];
 
-  for (const fichier of params.fichiers) {
+  for (const storagePath of params.storagePaths) {
     try {
-      const entreesFichier = await preparerEntreesDepuisFichier(fichier);
-      entrees.push(...entreesFichier);
+      const preparees = await preparerEntreesDepuisStoragePath(
+        storagePath,
+        params.organisationId,
+        adminClient,
+      );
+      entrees.push(...preparees);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Erreur d'import.";
-      erreurs.push(`${fichier.name} : ${message}`);
+        error instanceof Error ? error.message : "Erreur de préparation.";
+      erreurs.push(`${storagePath} : ${message}`);
     }
   }
 
@@ -202,27 +325,19 @@ export async function traiterFichiersNonClasse(params: {
     return { documents: [], erreurs };
   }
 
-  const televerses = await Promise.all(
-    entrees.map((entree) =>
-      televerserEntree(entree, params.organisationId, adminClient),
-    ),
-  );
+  const documents: DocumentNonClasse[] = [];
 
-  const propositions = await Promise.all(
-    televerses.map((entree) =>
-      proposerDepuisBytes({
+  for (let index = 0; index < entrees.length; index += 1) {
+    const entree = entrees[index]!;
+    try {
+      const proposition = await proposerDepuisBytes({
         nom: entree.nom,
         typeDocument: entree.typeDocument,
         bytes: entree.bytes,
         dossiers: params.dossiers,
         majeurs: params.majeurs,
-      }),
-    ),
-  );
+      });
 
-  const documents = await Promise.all(
-    televerses.map(async (entree, index) => {
-      const proposition = propositions[index]!;
       const gedDossierId = resoudreDossierExistantProposition({
         majeurId: proposition.majeurId,
         gedDossierId: proposition.gedDossierId,
@@ -243,7 +358,7 @@ export async function traiterFichiersNonClasse(params: {
             )
           : null;
 
-      return insererDocumentAvecProposition(
+      const document = await insererDocumentAvecProposition(
         entree,
         proposition,
         gedDossierId,
@@ -252,8 +367,13 @@ export async function traiterFichiersNonClasse(params: {
         contexte,
         index,
       );
-    }),
-  );
+      documents.push(document);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur de classification.";
+      erreurs.push(`${entree.nom} : ${message}`);
+    }
+  }
 
   return { documents, erreurs };
 }

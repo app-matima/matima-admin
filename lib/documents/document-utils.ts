@@ -31,7 +31,11 @@ export function buildInboxStoragePath(
   nomOriginal: string,
 ): string {
   const nomSecurise = sanitizeNomFichier(nomOriginal);
-  return `${organisationId}/inbox/${Date.now()}_${nomSecurise}`;
+  const unique =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${organisationId}/inbox/${Date.now()}_${unique}_${nomSecurise}`;
 }
 
 export function buildStoragePath(

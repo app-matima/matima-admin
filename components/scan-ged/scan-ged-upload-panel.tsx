@@ -465,7 +465,8 @@ export function ScanGedUploadPanel({
           Déposez des PDF ou images, ou sélectionnez des fichiers
         </p>
         <p className="mb-4 text-xs text-text-muted">
-          Les PDF multi-documents sont découpés automatiquement aux feuilles
+          Upload direct vers le Storage (pas de limite 4,5&nbsp;Mo). Les PDF
+          multi-documents sont découpés automatiquement aux feuilles
           séparatrices
         </p>
         <button

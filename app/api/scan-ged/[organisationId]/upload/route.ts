@@ -1,96 +1,17 @@
 import { NextResponse } from "next/server";
-import { revalidatePath } from "next/cache";
-import { traiterFichiersNonClasse } from "@/lib/documents/non-classes-server";
-import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
-import { createAdminClient } from "@/lib/supabase/server";
-import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 
 export const runtime = "nodejs";
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ organisationId: string }> },
-) {
-  if (!(await requireScanGedAccess())) {
-    return NextResponse.json({ error: "Action non autorisée." }, { status: 403 });
-  }
-
-  const { organisationId } = await params;
-
-  if (!organisationId) {
-    return NextResponse.json(
-      { error: "Organisation requise." },
-      { status: 400 },
-    );
-  }
-
-  const supabase = createAdminClient();
-  const organisationIds = await getNonDemoOrganisationIds();
-  if (!organisationIds.includes(organisationId)) {
-    return NextResponse.json(
-      { error: "Organisation introuvable." },
-      { status: 404 },
-    );
-  }
-
-  const [dossiersResult, majeursResult] = await Promise.all([
-    supabase
-      .from("ged_dossiers")
-      .select("id, nom, majeur_id, parent_id")
-      .eq("organisation_id", organisationId)
-      .order("nom", { ascending: true }),
-    supabase
-      .from("majeurs")
-      .select("id, nom, prenom")
-      .eq("organisation_id", organisationId)
-      .eq("statut", "actif")
-      .order("nom", { ascending: true }),
-  ]);
-
-  if (dossiersResult.error) {
-    return NextResponse.json(
-      { error: dossiersResult.error.message },
-      { status: 500 },
-    );
-  }
-
-  if (majeursResult.error) {
-    return NextResponse.json(
-      { error: majeursResult.error.message },
-      { status: 500 },
-    );
-  }
-
-  const formData = await request.formData();
-  const fichiers = formData
-    .getAll("fichiers")
-    .filter((entree): entree is File => entree instanceof File);
-
-  if (fichiers.length === 0) {
-    return NextResponse.json(
-      { error: "Aucun fichier fourni." },
-      { status: 400 },
-    );
-  }
-
-  const { documents: documentsCrees, erreurs } = await traiterFichiersNonClasse({
-    fichiers,
-    organisationId,
-    dossiers: dossiersResult.data ?? [],
-    majeurs: majeursResult.data ?? [],
-  });
-
-  if (documentsCrees.length === 0) {
-    return NextResponse.json(
-      { error: erreurs.join(" ") || "Import impossible." },
-      { status: 400 },
-    );
-  }
-
-  revalidatePath("/scan-ged");
-
-  return NextResponse.json({
-    documents: documentsCrees,
-    erreurs: erreurs.length > 0 ? erreurs : undefined,
-  });
+/**
+ * Ancien upload multipart (body FormData) — désactivé (limite Vercel 4,5 Mo).
+ * Utiliser signed-upload + classifier.
+ */
+export async function POST() {
+  return NextResponse.json(
+    {
+      error:
+        "Cet endpoint n'accepte plus de fichiers en body. Utilisez l'upload Storage signé puis /classifier.",
+    },
+    { status: 410 },
+  );
 }
