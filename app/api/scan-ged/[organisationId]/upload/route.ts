@@ -33,10 +33,10 @@ export async function POST(
     );
   }
 
-  const [categoriesResult, majeursResult] = await Promise.all([
+  const [dossiersResult, majeursResult] = await Promise.all([
     supabase
-      .from("categories_documents")
-      .select("id, nom")
+      .from("ged_dossiers")
+      .select("id, nom, majeur_id, parent_id")
       .eq("organisation_id", organisationId)
       .order("nom", { ascending: true }),
     supabase
@@ -47,9 +47,9 @@ export async function POST(
       .order("nom", { ascending: true }),
   ]);
 
-  if (categoriesResult.error) {
+  if (dossiersResult.error) {
     return NextResponse.json(
-      { error: categoriesResult.error.message },
+      { error: dossiersResult.error.message },
       { status: 500 },
     );
   }
@@ -76,7 +76,7 @@ export async function POST(
   const { documents: documentsCrees, erreurs } = await traiterFichiersNonClasse({
     fichiers,
     organisationId,
-    categories: categoriesResult.data ?? [],
+    dossiers: dossiersResult.data ?? [],
     majeurs: majeursResult.data ?? [],
   });
 

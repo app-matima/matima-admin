@@ -1,16 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Eye, FileUp, Loader2, Sparkles, X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
+import { GedDossierSelect } from "@/components/scan-ged/ged-dossier-select";
 import { isImage, isPdf } from "@/lib/documents/document-utils";
+import {
+  NOUVEAU_DOSSIER_MANUEL,
+  NOUVEAU_DOSSIER_SELECTION,
+} from "@/lib/documents/ged-dossier-constants";
+import {
+  analyserSegmentsNouveauChemin,
+  formatCheminDossierBreadcrumb,
+  formatSegmentsCheminBreadcrumb,
+} from "@/lib/documents/ged-dossier-utils";
 import {
   fetchScanGedContext,
   uploadScanGedDocuments,
   validerScanGedDocument,
   validerTousScanGedDocuments,
-  type CategorieDocument,
   type DocumentNonClasse,
+  type GedDossier,
   type MajeurActif,
 } from "@/lib/scan-ged/client";
 import { cn } from "@/lib/utils";
@@ -20,12 +30,15 @@ interface LigneDocument {
   documentId: string;
   storagePath: string;
   nom: string;
-  categorieId: string;
+  gedDossierId: string;
   majeurId: string;
   typeDocument: string;
-  propositionCategorieId?: string | null;
+  propositionGedDossierId?: string | null;
+  propositionNouveauCheminDossier?: string[] | null;
+  propositionSuggestionDossierExistant?: { id: string; nom: string } | null;
   propositionMajeurId?: string | null;
   propositionNom?: string | null;
+  nouveauCheminManuel?: string[];
 }
 
 interface ScanGedUploadPanelProps {
@@ -33,15 +46,58 @@ interface ScanGedUploadPanelProps {
   onChangeMjpm: () => void;
 }
 
+function normaliserCheminProposition(valeur: unknown): string[] | null {
+  if (!Array.isArray(valeur)) {
+    return null;
+  }
+
+  const segments = valeur
+    .filter((segment): segment is string => typeof segment === "string")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return segments.length > 0 ? segments : null;
+}
+
+function normaliserSuggestionDossierExistant(
+  valeur: unknown,
+): { id: string; nom: string } | null {
+  if (!valeur || typeof valeur !== "object") {
+    return null;
+  }
+
+  const candidat = valeur as { id?: unknown; nom?: unknown };
+  if (
+    typeof candidat.id !== "string" ||
+    !candidat.id.trim() ||
+    typeof candidat.nom !== "string" ||
+    !candidat.nom.trim()
+  ) {
+    return null;
+  }
+
+  return { id: candidat.id.trim(), nom: candidat.nom.trim() };
+}
+
 function documentVersLigne(document: DocumentNonClasse): LigneDocument {
+  const propositionNouveauCheminDossier = normaliserCheminProposition(
+    document.proposition_nouveau_chemin_dossier,
+  );
+
   return {
     documentId: document.id,
     storagePath: document.storage_path,
     nom: document.nom_original,
-    categorieId: document.proposition_categorie_id ?? "",
+    gedDossierId:
+      document.proposition_ged_dossier_id ??
+      (propositionNouveauCheminDossier ? NOUVEAU_DOSSIER_SELECTION : ""),
     majeurId: document.proposition_majeur_id ?? "",
     typeDocument: document.type_document,
-    propositionCategorieId: document.proposition_categorie_id,
+    propositionGedDossierId: document.proposition_ged_dossier_id,
+    propositionNouveauCheminDossier,
+    propositionSuggestionDossierExistant: normaliserSuggestionDossierExistant(
+      document.proposition_suggestion_dossier_existant,
+    ),
     propositionMajeurId: document.proposition_majeur_id,
     propositionNom: document.proposition_nom,
   };
@@ -59,16 +115,37 @@ function getNomMajeur(
   return majeur ? `${majeur.nom} ${majeur.prenom}` : null;
 }
 
-function getNomCategorie(
-  categories: CategorieDocument[],
-  categorieId?: string | null,
-): string | null {
-  if (!categorieId) {
-    return null;
-  }
-
+function cheminManuelIncomplet(ligne: LigneDocument): boolean {
   return (
-    categories.find((categorie) => categorie.id === categorieId)?.nom ?? null
+    ligne.gedDossierId === NOUVEAU_DOSSIER_MANUEL &&
+    !normaliserCheminProposition(ligne.nouveauCheminManuel)
+  );
+}
+
+function ligneVersParamsValidation(ligne: LigneDocument) {
+  const estCheminIa = ligne.gedDossierId === NOUVEAU_DOSSIER_SELECTION;
+  const estCheminManuel = ligne.gedDossierId === NOUVEAU_DOSSIER_MANUEL;
+
+  return {
+    documentId: ligne.documentId,
+    gedDossierId:
+      estCheminIa || estCheminManuel ? null : ligne.gedDossierId || null,
+    nouveauCheminDossier: estCheminIa
+      ? (ligne.propositionNouveauCheminDossier ?? null)
+      : estCheminManuel
+        ? normaliserCheminProposition(ligne.nouveauCheminManuel)
+        : null,
+    majeurId: ligne.majeurId,
+    nom: ligne.nom,
+  };
+}
+
+function lignePreteAValider(ligne: LigneDocument): boolean {
+  return (
+    Boolean(ligne.majeurId) &&
+    Boolean(ligne.nom.trim()) &&
+    Boolean(ligne.gedDossierId) &&
+    !cheminManuelIncomplet(ligne)
   );
 }
 
@@ -141,7 +218,7 @@ export function ScanGedUploadPanel({
   onChangeMjpm,
 }: ScanGedUploadPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [categories, setCategories] = useState<CategorieDocument[]>([]);
+  const [dossiers, setDossiers] = useState<GedDossier[]>([]);
   const [majeurs, setMajeurs] = useState<MajeurActif[]>([]);
   const [lignes, setLignes] = useState<LigneDocument[]>([]);
   const [chargement, setChargement] = useState(true);
@@ -155,13 +232,23 @@ export function ScanGedUploadPanel({
   const [glisserActif, setGlisserActif] = useState(false);
   const [previewLigne, setPreviewLigne] = useState<LigneDocument | null>(null);
 
+  const dossiersParMajeur = useMemo(() => {
+    const map: Record<string, GedDossier[]> = {};
+    for (const dossier of dossiers) {
+      const liste = map[dossier.majeur_id] ?? [];
+      liste.push(dossier);
+      map[dossier.majeur_id] = liste;
+    }
+    return map;
+  }, [dossiers]);
+
   const chargerDonnees = useCallback(async () => {
     setChargement(true);
     setErreur(null);
 
     try {
       const contexte = await fetchScanGedContext(organisation.organisationId);
-      setCategories(contexte.categories);
+      setDossiers(contexte.dossiers);
       setMajeurs(contexte.majeurs);
       setLignes(contexte.documents.map(documentVersLigne));
     } catch (error) {
@@ -202,7 +289,7 @@ export function ScanGedUploadPanel({
     });
 
     if (liste.length === 0) {
-      setErreur("Seuls les fichiers PDF et images sont acceptés.");
+      setErreur("Formats acceptés : PDF et images.");
       return;
     }
 
@@ -215,15 +302,15 @@ export function ScanGedUploadPanel({
         organisation.organisationId,
         liste,
       );
+      // Recharger dossiers (nouveaux chemins pas encore créés) + docs
+      const contexte = await fetchScanGedContext(organisation.organisationId);
+      setDossiers(contexte.dossiers);
+      setMajeurs(contexte.majeurs);
+      setLignes(contexte.documents.map(documentVersLigne));
 
-      setLignes((courantes) => [
-        ...resultat.documents.map(documentVersLigne),
-        ...courantes,
-      ]);
-
-      const count = resultat.documents.length;
+      const nb = resultat.documents.length;
       setMessage(
-        `${count} document${count > 1 ? "s" : ""} importé${count > 1 ? "s" : ""}.`,
+        `${nb} document${nb > 1 ? "s" : ""} importé${nb > 1 ? "s" : ""} et classifié${nb > 1 ? "s" : ""} par l'IA.`,
       );
 
       if (resultat.erreurs?.length) {
@@ -241,8 +328,10 @@ export function ScanGedUploadPanel({
   }
 
   async function handleValiderLigne(ligne: LigneDocument) {
-    if (!ligne.categorieId || !ligne.majeurId || !ligne.nom.trim()) {
-      setErreur("Veuillez renseigner le nom, la catégorie et le protégé.");
+    if (!lignePreteAValider(ligne)) {
+      setErreur(
+        "Veuillez renseigner le nom, le dossier et le protégé.",
+      );
       return;
     }
 
@@ -251,17 +340,15 @@ export function ScanGedUploadPanel({
     setMessage(null);
 
     try {
-      await validerScanGedDocument({
-        documentId: ligne.documentId,
-        categorieId: ligne.categorieId,
-        majeurId: ligne.majeurId,
-        nom: ligne.nom,
-      });
+      await validerScanGedDocument(ligneVersParamsValidation(ligne));
 
       setLignes((courantes) =>
         courantes.filter((item) => item.documentId !== ligne.documentId),
       );
-      setMessage("Document classé.");
+      // Dossiers peuvent avoir été créés
+      const contexte = await fetchScanGedContext(organisation.organisationId);
+      setDossiers(contexte.dossiers);
+      setMessage("Document classé dans la GED.");
     } catch (error) {
       setErreur(
         error instanceof Error
@@ -274,13 +361,11 @@ export function ScanGedUploadPanel({
   }
 
   async function handleValiderTout() {
-    const aValider = lignes.filter(
-      (ligne) => ligne.categorieId && ligne.majeurId && ligne.nom.trim(),
-    );
+    const aValider = lignes.filter(lignePreteAValider);
 
     if (aValider.length === 0) {
       setErreur(
-        "Aucun document prêt : chaque ligne doit avoir un nom, une catégorie et un protégé.",
+        "Aucun document prêt : chaque ligne doit avoir un nom, un dossier et un protégé.",
       );
       return;
     }
@@ -291,49 +376,52 @@ export function ScanGedUploadPanel({
 
     try {
       const resultat = await validerTousScanGedDocuments(
-        aValider.map((ligne) => ({
-          documentId: ligne.documentId,
-          categorieId: ligne.categorieId,
-          majeurId: ligne.majeurId,
-          nom: ligne.nom,
-        })),
+        aValider.map(ligneVersParamsValidation),
       );
 
       const idsValides = new Set(aValider.map((ligne) => ligne.documentId));
       setLignes((courantes) =>
         courantes.filter((ligne) => !idsValides.has(ligne.documentId)),
       );
-      setMessage(`${resultat.succes} document(s) classé(s).`);
+      const contexte = await fetchScanGedContext(organisation.organisationId);
+      setDossiers(contexte.dossiers);
+      setMessage(`${resultat.succes} document(s) classé(s) dans la GED.`);
 
       if (resultat.erreurs?.length) {
         setErreur(resultat.erreurs.join(" | "));
-        await chargerDonnees();
       }
     } catch (error) {
       setErreur(
         error instanceof Error ? error.message : "Impossible de tout valider.",
       );
-      await chargerDonnees();
     } finally {
       setValidationEnCours(false);
     }
   }
 
+  const mjpmLabel = organisation.mjpm
+    ? `${organisation.mjpm.prenom} ${organisation.mjpm.nom}`
+    : organisation.cabinetNom;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">
-            Cabinet sélectionné
-          </p>
+          <p className="text-sm text-text-muted">Cabinet sélectionné</p>
           <p className="text-base font-medium text-text-strong">
-            {organisation.cabinetNom}
+            {mjpmLabel}
+            {organisation.mjpm && organisation.cabinetNom ? (
+              <span className="font-normal text-text-muted">
+                {" "}
+                · {organisation.cabinetNom}
+              </span>
+            ) : null}
           </p>
         </div>
         <button
           type="button"
           onClick={onChangeMjpm}
-          className="inline-flex w-full items-center justify-center rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium text-text-strong transition-colors hover:bg-page sm:w-auto"
+          className="rounded-lg border border-border px-4 py-2 text-sm text-text-strong transition-colors hover:bg-page"
         >
           Changer de MJPM
         </button>
@@ -353,48 +441,48 @@ export function ScanGedUploadPanel({
           }
         }}
         className={cn(
-          "rounded-xl border-2 border-dashed p-6 text-center transition-colors sm:p-10",
+          "rounded-xl border-2 border-dashed p-8 text-center transition-colors",
           glisserActif
-            ? "border-accent bg-[#E6F7F5]/40"
+            ? "border-accent bg-accent/5"
             : "border-border bg-card",
         )}
       >
-        <div className="flex flex-col items-center gap-3">
+        <input
+          ref={inputRef}
+          type="file"
+          accept="application/pdf,image/*"
+          multiple
+          className="hidden"
+          onChange={(event) => {
+            if (event.target.files) {
+              void traiterFichiers(event.target.files);
+              event.target.value = "";
+            }
+          }}
+        />
+        <FileUp className="mx-auto mb-3 h-8 w-8 text-accent" />
+        <p className="mb-1 text-sm font-medium text-text-strong">
+          Déposez des PDF ou images, ou sélectionnez des fichiers
+        </p>
+        <p className="mb-4 text-xs text-text-muted">
+          Les PDF multi-documents sont découpés automatiquement aux feuilles
+          séparatrices
+        </p>
+        <button
+          type="button"
+          disabled={importEnCours}
+          onClick={() => inputRef.current?.click()}
+          className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+        >
           {importEnCours ? (
-            <Loader2 className="h-7 w-7 animate-spin text-accent" />
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Import en cours…
+            </>
           ) : (
-            <FileUp className="h-7 w-7 text-[#9CA3AF]" />
+            "Sélectionner des fichiers"
           )}
-          <div>
-            <p className="text-sm font-medium text-text-strong">
-              Glissez-déposez vos PDF et images ici
-            </p>
-            <p className="mt-1 text-xs text-text-muted">
-              Les PDF seront découpés automatiquement aux pages blanches
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={importEnCours}
-            onClick={() => inputRef.current?.click()}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Sélectionner des fichiers
-          </button>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            accept="application/pdf,image/*"
-            className="sr-only"
-            onChange={(event) => {
-              if (event.target.files && event.target.files.length > 0) {
-                void traiterFichiers(event.target.files);
-                event.target.value = "";
-              }
-            }}
-          />
-        </div>
+        </button>
       </div>
 
       {erreur && (
@@ -438,24 +526,49 @@ export function ScanGedUploadPanel({
       ) : (
         <div className="space-y-4">
           {lignes.map((ligne) => {
-            const propositionCategorie = getNomCategorie(
-              categories,
-              ligne.propositionCategorieId,
-            );
+            const dossiersMajeur = dossiersParMajeur[ligne.majeurId] ?? [];
+            const dossiersProposition =
+              dossiersParMajeur[
+                ligne.propositionMajeurId ?? ligne.majeurId
+              ] ?? dossiersMajeur;
             const propositionMajeur = getNomMajeur(
               majeurs,
-              ligne.propositionMajeurId,
+              ligne.propositionMajeurId ?? ligne.majeurId,
             );
-            const propositionTexte = [propositionCategorie, propositionMajeur]
-              .filter(Boolean)
-              .join(" · ");
+
+            let cheminIa: string | null = null;
+            if (ligne.propositionGedDossierId) {
+              cheminIa = formatCheminDossierBreadcrumb(
+                ligne.propositionGedDossierId,
+                dossiersProposition,
+              );
+            } else if (ligne.propositionNouveauCheminDossier?.length) {
+              const segments = analyserSegmentsNouveauChemin(
+                ligne.propositionNouveauCheminDossier,
+                dossiersProposition,
+              );
+              cheminIa = formatSegmentsCheminBreadcrumb(
+                segments.map((segment) => segment.libelle),
+              );
+            }
+
+            const suggestion = ligne.propositionSuggestionDossierExistant;
+            const libelleSuggestion = suggestion
+              ? formatCheminDossierBreadcrumb(
+                  suggestion.id,
+                  dossiersProposition,
+                ) || suggestion.nom
+              : null;
+            const estNouveauChemin =
+              !ligne.propositionGedDossierId &&
+              Boolean(ligne.propositionNouveauCheminDossier?.length);
 
             return (
               <div
                 key={ligne.documentId}
                 className="rounded-xl border border-border bg-card p-4 sm:p-5"
               >
-                <div className="grid grid-cols-1 items-end gap-4 lg:grid-cols-[1.4fr_1fr_1fr_auto]">
+                <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[1.2fr_1fr_1.4fr_auto]">
                   <div>
                     <label
                       htmlFor={`nom-${ligne.documentId}`}
@@ -477,32 +590,6 @@ export function ScanGedUploadPanel({
 
                   <div>
                     <label
-                      htmlFor={`cat-${ligne.documentId}`}
-                      className="mb-1.5 block text-xs font-medium text-text-muted"
-                    >
-                      Catégorie
-                    </label>
-                    <select
-                      id={`cat-${ligne.documentId}`}
-                      value={ligne.categorieId}
-                      onChange={(event) =>
-                        mettreAJourLigne(ligne.documentId, {
-                          categorieId: event.target.value,
-                        })
-                      }
-                      className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
-                    >
-                      <option value="">Sélectionner…</option>
-                      {categories.map((categorie) => (
-                        <option key={categorie.id} value={categorie.id}>
-                          {categorie.nom}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label
                       htmlFor={`majeur-${ligne.documentId}`}
                       className="mb-1.5 block text-xs font-medium text-text-muted"
                     >
@@ -511,11 +598,17 @@ export function ScanGedUploadPanel({
                     <select
                       id={`majeur-${ligne.documentId}`}
                       value={ligne.majeurId}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        const nouveauMajeurId = event.target.value;
                         mettreAJourLigne(ligne.documentId, {
-                          majeurId: event.target.value,
-                        })
-                      }
+                          majeurId: nouveauMajeurId,
+                          gedDossierId: ligne.propositionNouveauCheminDossier
+                            ?.length
+                            ? NOUVEAU_DOSSIER_SELECTION
+                            : "",
+                          nouveauCheminManuel: undefined,
+                        });
+                      }}
                       className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
                     >
                       <option value="">Sélectionner…</option>
@@ -527,7 +620,34 @@ export function ScanGedUploadPanel({
                     </select>
                   </div>
 
-                  <div className="flex flex-wrap gap-2 lg:justify-end">
+                  <GedDossierSelect
+                    id={`dossier-${ligne.documentId}`}
+                    label="Dossier"
+                    dossiers={dossiersMajeur}
+                    value={ligne.gedDossierId}
+                    propositionNouveauCheminDossier={
+                      ligne.propositionNouveauCheminDossier
+                    }
+                    nouveauCheminManuel={ligne.nouveauCheminManuel}
+                    onNouveauCheminManuelChange={(segments) =>
+                      mettreAJourLigne(ligne.documentId, {
+                        gedDossierId: NOUVEAU_DOSSIER_MANUEL,
+                        nouveauCheminManuel: segments,
+                      })
+                    }
+                    onChange={(dossierId) =>
+                      mettreAJourLigne(ligne.documentId, {
+                        gedDossierId: dossierId,
+                        nouveauCheminManuel:
+                          dossierId === NOUVEAU_DOSSIER_MANUEL
+                            ? ligne.nouveauCheminManuel ?? [""]
+                            : undefined,
+                      })
+                    }
+                    disabled={!ligne.majeurId}
+                  />
+
+                  <div className="flex flex-wrap gap-2 lg:justify-end lg:pt-6">
                     <button
                       type="button"
                       onClick={() => setPreviewLigne(ligne)}
@@ -542,7 +662,8 @@ export function ScanGedUploadPanel({
                       onClick={() => void handleValiderLigne(ligne)}
                       disabled={
                         validationDocumentId === ligne.documentId ||
-                        validationEnCours
+                        validationEnCours ||
+                        !lignePreteAValider(ligne)
                       }
                       className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -553,14 +674,42 @@ export function ScanGedUploadPanel({
                   </div>
                 </div>
 
-                {propositionTexte && (
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <Sparkles className="h-4 w-4 text-accent" />
-                    <Badge variant="info">IA : {propositionTexte}</Badge>
-                    {ligne.propositionNom && ligne.propositionNom !== ligne.nom && (
-                      <span className="text-xs text-text-muted">
-                        Nom suggéré : {ligne.propositionNom}
-                      </span>
+                {(cheminIa || propositionMajeur) && (
+                  <div className="mt-3 space-y-1.5 rounded-lg border border-border bg-page/60 px-3 py-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-accent" />
+                      {cheminIa && (
+                        <Badge variant="info">IA : {cheminIa}</Badge>
+                      )}
+                      {propositionMajeur && (
+                        <span className="text-xs text-text-muted">
+                          Protégé : {propositionMajeur}
+                        </span>
+                      )}
+                      {ligne.propositionNom &&
+                        ligne.propositionNom !== ligne.nom && (
+                          <span className="text-xs text-text-muted">
+                            Nom suggéré : {ligne.propositionNom}
+                          </span>
+                        )}
+                    </div>
+                    {estNouveauChemin && suggestion && libelleSuggestion && (
+                      <p className="pl-6 text-xs text-text-muted">
+                        Un dossier similaire existe peut-être :{" "}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            mettreAJourLigne(ligne.documentId, {
+                              gedDossierId: suggestion.id,
+                              nouveauCheminManuel: undefined,
+                            })
+                          }
+                          className="font-medium text-accent underline decoration-accent/40 underline-offset-2 transition-colors hover:text-accent-hover"
+                        >
+                          {libelleSuggestion}
+                        </button>
+                        {" — cliquez pour l'utiliser à la place"}
+                      </p>
                     )}
                   </div>
                 )}

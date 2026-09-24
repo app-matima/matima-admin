@@ -4,17 +4,21 @@ import {
   buildStoragePath,
   sanitizeNomFichier,
 } from "@/lib/documents/document-utils";
+import {
+  type SuggestionDossierExistant,
+  trouverSuggestionDossierExistant,
+} from "@/lib/documents/dossier-similarite";
+import {
+  type DossierOrganisationRow,
+  creerOuRecupererCheminDossier,
+  resoudreDossierExistantProposition,
+} from "@/lib/documents/ged-dossiers-server";
 import { decouperPdfAuxPagesBlanches } from "@/lib/documents/split-pdf-blank-pages";
 import { createAdminClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { DocumentNonClasse } from "@/types/documents";
 
 const BUCKET = "documents";
-
-interface CategorieRow {
-  id: string;
-  nom: string;
-}
 
 interface MajeurRow {
   id: string;
@@ -34,7 +38,7 @@ interface EntreeTeleversee extends EntreeNonClasse {
 
 interface ContexteTraitement {
   organisationId: string;
-  categories: CategorieRow[];
+  dossiers: DossierOrganisationRow[];
   majeurs: MajeurRow[];
   adminClient: SupabaseClient;
 }
@@ -100,7 +104,7 @@ async function proposerDepuisBytes(params: {
   nom: string;
   typeDocument: string;
   bytes: Uint8Array;
-  categories: CategorieRow[];
+  dossiers: DossierOrganisationRow[];
   majeurs: MajeurRow[];
 }) {
   const pdfBase64 = estPdf(params.typeDocument, params.nom)
@@ -114,7 +118,7 @@ async function proposerDepuisBytes(params: {
   return proposerDocumentNonClasse({
     nomOriginal: params.nom,
     typeDocument: params.typeDocument,
-    categories: params.categories,
+    dossiers: params.dossiers,
     majeurs: params.majeurs,
     pdfBase64,
     imageBase64,
@@ -127,6 +131,9 @@ async function proposerDepuisBytes(params: {
 async function insererDocumentAvecProposition(
   entree: EntreeTeleversee,
   proposition: Awaited<ReturnType<typeof proposerDepuisBytes>>,
+  gedDossierId: string | null,
+  propositionNouveauCheminDossier: string[] | null,
+  suggestionDossierExistant: SuggestionDossierExistant | null,
   contexte: ContexteTraitement,
   index: number,
 ): Promise<DocumentNonClasse> {
@@ -136,13 +143,17 @@ async function insererDocumentAvecProposition(
       organisation_id: contexte.organisationId,
       majeur_id: null,
       categorie_id: null,
+      ged_dossier_id: null,
       storage_path: entree.storagePath,
       type_document: entree.typeDocument,
       nom_original: proposition.nomFichier ?? entree.nom,
       nom_fichier: `${Date.now()}_${index}_${entree.nom}`,
       taille_bytes: entree.bytes.byteLength,
-      proposition_categorie_id: proposition.categorieId,
+      proposition_categorie_id: null,
       proposition_majeur_id: proposition.majeurId,
+      proposition_ged_dossier_id: gedDossierId,
+      proposition_nouveau_chemin_dossier: propositionNouveauCheminDossier,
+      proposition_suggestion_dossier_existant: suggestionDossierExistant,
       proposition_nom: proposition.nomFichier,
     })
     .select("*")
@@ -161,13 +172,13 @@ async function insererDocumentAvecProposition(
 export async function traiterFichiersNonClasse(params: {
   fichiers: File[];
   organisationId: string;
-  categories: CategorieRow[];
+  dossiers: DossierOrganisationRow[];
   majeurs: MajeurRow[];
 }): Promise<{ documents: DocumentNonClasse[]; erreurs: string[] }> {
   const adminClient = createAdminClient();
   const contexte: ContexteTraitement = {
     organisationId: params.organisationId,
-    categories: params.categories,
+    dossiers: params.dossiers,
     majeurs: params.majeurs,
     adminClient,
   };
@@ -202,21 +213,45 @@ export async function traiterFichiersNonClasse(params: {
         nom: entree.nom,
         typeDocument: entree.typeDocument,
         bytes: entree.bytes,
-        categories: params.categories,
+        dossiers: params.dossiers,
         majeurs: params.majeurs,
       }),
     ),
   );
 
   const documents = await Promise.all(
-    televerses.map((entree, index) =>
-      insererDocumentAvecProposition(
+    televerses.map(async (entree, index) => {
+      const proposition = propositions[index]!;
+      const gedDossierId = resoudreDossierExistantProposition({
+        majeurId: proposition.majeurId,
+        gedDossierId: proposition.gedDossierId,
+        dossiers: params.dossiers,
+      });
+      const propositionNouveauCheminDossier =
+        !gedDossierId && proposition.nouveauCheminDossier?.length
+          ? proposition.nouveauCheminDossier
+          : null;
+
+      const suggestionDossierExistant =
+        propositionNouveauCheminDossier && proposition.majeurId
+          ? trouverSuggestionDossierExistant(
+              propositionNouveauCheminDossier[0] ?? "",
+              params.dossiers.filter(
+                (dossier) => dossier.majeur_id === proposition.majeurId,
+              ),
+            )
+          : null;
+
+      return insererDocumentAvecProposition(
         entree,
-        propositions[index],
+        proposition,
+        gedDossierId,
+        propositionNouveauCheminDossier,
+        suggestionDossierExistant,
         contexte,
         index,
-      ),
-    ),
+      );
+    }),
   );
 
   return { documents, erreurs };
@@ -224,11 +259,38 @@ export async function traiterFichiersNonClasse(params: {
 
 export async function deplacerEtClasserDocument(params: {
   document: DocumentNonClasse;
-  categorieId: string;
+  gedDossierId: string | null;
+  nouveauCheminDossier?: string[] | null;
   majeurId: string;
   nom: string;
 }): Promise<DocumentNonClasse> {
   const adminClient = createAdminClient();
+  let gedDossierIdFinal = params.gedDossierId;
+
+  const segments = (params.nouveauCheminDossier ?? [])
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments.length > 0) {
+    const cheminPropositionIa = (
+      params.document.proposition_nouveau_chemin_dossier ?? []
+    )
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    const cheminIdentiqueAPropositionIa =
+      segments.length === cheminPropositionIa.length &&
+      segments.every(
+        (segment, index) => segment === cheminPropositionIa[index],
+      );
+
+    gedDossierIdFinal = await creerOuRecupererCheminDossier(adminClient, {
+      organisationId: params.document.organisation_id,
+      majeurId: params.majeurId,
+      segments,
+      creeParIa: cheminIdentiqueAPropositionIa,
+    });
+  }
+
   const nomSecurise = sanitizeNomFichier(
     params.nom.trim() || params.document.nom_original,
   );
@@ -254,10 +316,15 @@ export async function deplacerEtClasserDocument(params: {
     .from("documents")
     .update({
       majeur_id: params.majeurId,
-      categorie_id: params.categorieId,
+      ged_dossier_id: gedDossierIdFinal,
+      categorie_id: null,
       nom_original: params.nom.trim() || params.document.nom_original,
       storage_path: nouveauChemin,
+      a_consulter: true,
       proposition_categorie_id: null,
+      proposition_ged_dossier_id: null,
+      proposition_nouveau_chemin_dossier: null,
+      proposition_suggestion_dossier_existant: null,
       proposition_majeur_id: null,
       proposition_nom: null,
     })

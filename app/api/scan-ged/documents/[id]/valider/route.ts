@@ -8,9 +8,23 @@ import type { DocumentNonClasse } from "@/types/documents";
 export const runtime = "nodejs";
 
 interface ValiderDocumentBody {
-  categorieId: string;
+  gedDossierId?: string | null;
+  nouveauCheminDossier?: string[] | null;
   majeurId: string;
   nom: string;
+}
+
+function cheminDossierNonVide(valeur: unknown): string[] | null {
+  if (!Array.isArray(valeur)) {
+    return null;
+  }
+
+  const segments = valeur
+    .filter((segment): segment is string => typeof segment === "string")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return segments.length > 0 ? segments : null;
 }
 
 export async function PATCH(
@@ -34,9 +48,32 @@ export async function PATCH(
     );
   }
 
-  if (!body.categorieId || !body.majeurId || !body.nom?.trim()) {
+  const nouveauChemin = cheminDossierNonVide(body.nouveauCheminDossier);
+  const gedDossierId =
+    typeof body.gedDossierId === "string" && body.gedDossierId.trim()
+      ? body.gedDossierId.trim()
+      : null;
+
+  if (!body.majeurId || !body.nom?.trim()) {
     return NextResponse.json(
-      { error: "Catégorie, protégé et nom sont obligatoires." },
+      { error: "Protégé et nom sont obligatoires." },
+      { status: 400 },
+    );
+  }
+
+  if (gedDossierId && nouveauChemin) {
+    return NextResponse.json(
+      {
+        error:
+          "Choisissez un dossier existant ou un nouveau chemin, pas les deux.",
+      },
+      { status: 400 },
+    );
+  }
+
+  if (!gedDossierId && !nouveauChemin) {
+    return NextResponse.json(
+      { error: "Choisissez un dossier ou créez-en un nouveau." },
       { status: 400 },
     );
   }
@@ -46,7 +83,7 @@ export async function PATCH(
     .from("documents")
     .select("*")
     .eq("id", id)
-    .is("categorie_id", null)
+    .is("majeur_id", null)
     .single();
 
   if (documentError || !document) {
@@ -59,7 +96,8 @@ export async function PATCH(
   try {
     const documentClasse = await deplacerEtClasserDocument({
       document: document as DocumentNonClasse,
-      categorieId: body.categorieId,
+      gedDossierId,
+      nouveauCheminDossier: nouveauChemin,
       majeurId: body.majeurId,
       nom: body.nom,
     });

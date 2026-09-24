@@ -9,13 +9,27 @@ export const runtime = "nodejs";
 
 interface DocumentAValider {
   documentId: string;
-  categorieId: string;
+  gedDossierId?: string | null;
+  nouveauCheminDossier?: string[] | null;
   majeurId: string;
   nom: string;
 }
 
 interface ValiderToutBody {
   documents: DocumentAValider[];
+}
+
+function cheminDossierNonVide(valeur: unknown): string[] | null {
+  if (!Array.isArray(valeur)) {
+    return null;
+  }
+
+  const segments = valeur
+    .filter((segment): segment is string => typeof segment === "string")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  return segments.length > 0 ? segments : null;
 }
 
 export async function POST(request: Request) {
@@ -45,7 +59,18 @@ export async function POST(request: Request) {
   const erreurs: string[] = [];
 
   for (const entree of body.documents) {
-    if (!entree.categorieId || !entree.majeurId || !entree.nom?.trim()) {
+    const nouveauChemin = cheminDossierNonVide(entree.nouveauCheminDossier);
+    const gedDossierId =
+      typeof entree.gedDossierId === "string" && entree.gedDossierId.trim()
+        ? entree.gedDossierId.trim()
+        : null;
+
+    if (
+      !entree.majeurId ||
+      !entree.nom?.trim() ||
+      (!gedDossierId && !nouveauChemin) ||
+      (gedDossierId && nouveauChemin)
+    ) {
       erreurs.push(`${entree.documentId} : champs incomplets`);
       continue;
     }
@@ -55,7 +80,7 @@ export async function POST(request: Request) {
         .from("documents")
         .select("*")
         .eq("id", entree.documentId)
-        .is("categorie_id", null)
+        .is("majeur_id", null)
         .single();
 
       if (documentError || !document) {
@@ -65,7 +90,8 @@ export async function POST(request: Request) {
 
       await deplacerEtClasserDocument({
         document: document as DocumentNonClasse,
-        categorieId: entree.categorieId,
+        gedDossierId,
+        nouveauCheminDossier: nouveauChemin,
         majeurId: entree.majeurId,
         nom: entree.nom,
       });

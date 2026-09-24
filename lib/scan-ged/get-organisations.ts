@@ -97,35 +97,34 @@ export async function getScanGedOrganisationContext(
 
   if (!organisationIds.includes(organisationId)) {
     return {
-      categories: [],
+      dossiers: [],
       majeurs: [],
       documents: [],
     };
   }
 
-  const [categoriesResult, majeursResult, documentsResult] =
-    await Promise.all([
-      supabase
-        .from("categories_documents")
-        .select("id, organisation_id, nom, couleur, created_at")
-        .eq("organisation_id", organisationId)
-        .order("nom", { ascending: true }),
-      supabase
-        .from("majeurs")
-        .select("id, nom, prenom")
-        .eq("organisation_id", organisationId)
-        .eq("statut", "actif")
-        .order("nom", { ascending: true }),
-      supabase
-        .from("documents")
-        .select("*")
-        .eq("organisation_id", organisationId)
-        .is("categorie_id", null)
-        .order("created_at", { ascending: false }),
-    ]);
+  const [dossiersResult, majeursResult, documentsResult] = await Promise.all([
+    supabase
+      .from("ged_dossiers")
+      .select("id, organisation_id, majeur_id, parent_id, nom, cree_par_ia, created_at")
+      .eq("organisation_id", organisationId)
+      .order("nom", { ascending: true }),
+    supabase
+      .from("majeurs")
+      .select("id, nom, prenom")
+      .eq("organisation_id", organisationId)
+      .eq("statut", "actif")
+      .order("nom", { ascending: true }),
+    supabase
+      .from("documents")
+      .select("*")
+      .eq("organisation_id", organisationId)
+      .is("majeur_id", null)
+      .order("created_at", { ascending: false }),
+  ]);
 
-  if (categoriesResult.error) {
-    console.error("getScanGedOrganisationContext categories", categoriesResult.error);
+  if (dossiersResult.error) {
+    console.error("getScanGedOrganisationContext dossiers", dossiersResult.error);
   }
 
   if (majeursResult.error) {
@@ -137,7 +136,7 @@ export async function getScanGedOrganisationContext(
   }
 
   return {
-    categories: categoriesResult.data ?? [],
+    dossiers: dossiersResult.data ?? [],
     majeurs: majeursResult.data ?? [],
     documents: documentsResult.data ?? [],
   };

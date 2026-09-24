@@ -1,7 +1,7 @@
 import type { MjpmProfile } from "@/types/clients";
 import type {
-  CategorieDocument,
   DocumentNonClasse,
+  GedDossier,
   MajeurActif,
 } from "@/types/documents";
 
@@ -12,7 +12,7 @@ export interface ScanGedOrganisation {
 }
 
 export interface ScanGedOrganisationContext {
-  categories: CategorieDocument[];
+  dossiers: GedDossier[];
   majeurs: MajeurActif[];
   documents: DocumentNonClasse[];
 }

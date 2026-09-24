@@ -1,10 +1,13 @@
-import { CATEGORIES_CLASSIFICATION } from "@/lib/claude/classify-document";
 import { CLAUDE_MODEL_HAIKU } from "@/lib/claude/models";
+import { formaterDossiersOrganisationPourPrompt } from "@/lib/documents/ged-dossiers-server";
+import { nomsDossiersQuasiIdentiques } from "@/lib/documents/ged-dossier-utils";
 import type { PropositionDocumentIA } from "@/types/documents";
 
-interface CategoriePourProposition {
+interface DossierPourProposition {
   id: string;
   nom: string;
+  majeur_id: string;
+  parent_id: string | null;
 }
 
 interface MajeurPourProposition {
@@ -16,7 +19,7 @@ interface MajeurPourProposition {
 interface ProposerDocumentParams {
   nomOriginal: string;
   typeDocument: string;
-  categories: CategoriePourProposition[];
+  dossiers: DossierPourProposition[];
   majeurs: MajeurPourProposition[];
   pdfBase64?: string | null;
   imageBase64?: string | null;
@@ -42,40 +45,21 @@ type MessageContent =
       };
     };
 
+interface ReponseClassificationJson {
+  majeur_id?: string | null;
+  dossier_id?: string | null;
+  nouveau_chemin_dossier?: unknown;
+  nouveau_dossier_nom?: string | null;
+  nom_fichier?: string | null;
+  confiance?: string | null;
+}
+
 function normaliserTexte(valeur: string): string {
   return valeur
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim()
     .toLowerCase();
-}
-
-function resoudreCategorieId(
-  nomRetourne: string,
-  categories: CategoriePourProposition[],
-): string | null {
-  const nomNormalise = normaliserTexte(nomRetourne);
-
-  const exacte = categories.find(
-    (categorie) => normaliserTexte(categorie.nom) === nomNormalise,
-  );
-  if (exacte) {
-    return exacte.id;
-  }
-
-  const liste = CATEGORIES_CLASSIFICATION.find(
-    (categorie) => normaliserTexte(categorie) === nomNormalise,
-  );
-  if (!liste) {
-    return null;
-  }
-
-  return (
-    categories.find(
-      (categorie) =>
-        normaliserTexte(categorie.nom) === normaliserTexte(liste),
-    )?.id ?? null
-  );
 }
 
 function resoudreMajeurId(
@@ -101,32 +85,118 @@ function resoudreMajeurId(
   );
 }
 
-function construirePrompt(params: ProposerDocumentParams): string {
-  const categoriesListe = params.categories
-    .map((categorie) => `- ${categorie.nom} (id: ${categorie.id})`)
-    .join("\n");
+export function resoudreDossierId(
+  valeur: string,
+  majeurId: string | null,
+  dossiers: DossierPourProposition[],
+): string | null {
+  if (!majeurId || !valeur || valeur === "null") {
+    return null;
+  }
 
+  const dossiersDuMajeur = dossiers.filter(
+    (dossier) => dossier.majeur_id === majeurId,
+  );
+
+  const parId = dossiersDuMajeur.find((dossier) => dossier.id === valeur);
+  if (parId) {
+    return parId.id;
+  }
+
+  const nomNormalise = normaliserTexte(valeur);
+  const correspondancesExactes = dossiersDuMajeur.filter(
+    (dossier) => normaliserTexte(dossier.nom) === nomNormalise,
+  );
+
+  if (correspondancesExactes.length === 1) {
+    return correspondancesExactes[0]!.id;
+  }
+
+  const correspondancesProches = dossiersDuMajeur.filter((dossier) =>
+    nomsDossiersQuasiIdentiques(dossier.nom, valeur),
+  );
+
+  return correspondancesProches.length === 1
+    ? correspondancesProches[0]!.id
+    : null;
+}
+
+function normaliserNouveauCheminDossier(json: {
+  nouveau_chemin_dossier?: unknown;
+  nouveau_dossier_nom?: string | null;
+}): string[] | null {
+  if (Array.isArray(json.nouveau_chemin_dossier)) {
+    const segments = json.nouveau_chemin_dossier
+      .filter((segment): segment is string => typeof segment === "string")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    return segments.length > 0 ? segments : null;
+  }
+
+  if (
+    typeof json.nouveau_dossier_nom === "string" &&
+    json.nouveau_dossier_nom !== "null"
+  ) {
+    const segment = json.nouveau_dossier_nom.trim();
+    return segment ? [segment] : null;
+  }
+
+  return null;
+}
+
+function construirePrompt(params: ProposerDocumentParams): string {
   const majeursListe = params.majeurs
     .map((majeur) => `- ${majeur.nom} ${majeur.prenom} (id: ${majeur.id})`)
     .join("\n");
 
+  const dossiersParMajeur = params.majeurs
+    .map((majeur) => {
+      const liste = formaterDossiersOrganisationPourPrompt(
+        params.dossiers,
+        majeur.id,
+      );
+
+      return `${majeur.nom} ${majeur.prenom} :\n${liste}`;
+    })
+    .join("\n\n");
+
   return `Tu es un assistant de classement documentaire pour un logiciel MJPM en France.
 
 Analyse le document joint et le nom du fichier, puis propose :
-1. La catégorie la plus adaptée parmi la liste
-2. Le protégé (majeur) le plus probable parmi la liste
-3. Un nom de fichier court, clair et descriptif (avec extension)
+1. Le protégé (majeur) le plus probable parmi la liste
+2. Le dossier existant le plus adapté (dossier_id) — à N'IMPORTE QUEL niveau de l'arborescence listée, pas seulement à la racine
+3. Si aucun dossier existant ne convient vraiment, propose un NOUVEAU chemin complet depuis la racine (nouveau_chemin_dossier : tableau de noms de dossiers, un segment par niveau)
+4. Un nom de fichier court, clair et descriptif (avec extension)
+5. Ta confiance globale ("haute" ou "basse") sur l'identification du protégé ET du dossier précis (ou du nouveau chemin)
+
+Méthode de raisonnement (à appliquer avant de répondre) :
+Réfléchis d'abord au TYPE de document (pièce d'identité, facture, courrier officiel, document médical, relevé bancaire, document juridique...) avant de choisir le dossier. Exemples : une carte d'identité ou un passeport doit aller dans un dossier lié à l'identité/état civil, jamais dans un dossier de factures. Un relevé bancaire va dans un dossier lié à la banque, jamais dans un dossier de santé. Si le type de document ne correspond à AUCUN dossier existant, propose TOUJOURS un nouveau dossier plutôt que de forcer un mauvais classement — c'est préférable à une erreur de classement sur un document sensible.
+
+Organisation multi-niveaux :
+- Tu peux proposer un chemin à plusieurs niveaux si cela organise mieux le document (ex. ["Identité", "Cartes et papiers"] plutôt que ["Identité"] seul)
+- Utilise dossier_id si un dossier existant listé correspond déjà clairement, quel que soit son niveau
+- Utilise nouveau_chemin_dossier uniquement si aucun dossier existant ne convient ; crée alors tout le chemin nécessaire depuis la racine
+- Anti-doublons obligatoires : un dossier existant au singulier ou au pluriel (ex. « Attestation » / « Attestations »), ou à une formulation très proche (casse, accents, espaces), EST CE DOSSIER. Réutilise-le via dossier_id — ne propose JAMAIS un nouveau_chemin_dossier qui ne fait que reformuler légèrement un nom déjà listé
+
+Précision du classement :
+Sois précis dans ton classement. Ne te contente JAMAIS d'un dossier racine générique si un sous-dossier plus spécifique serait plus pertinent. Exemples : une facture doit être classée dans un sous-dossier portant le nom de l'entreprise émettrice (ex: 'Factures > EDF', 'Factures > Orange'), pas directement dans 'Factures'. Un document d'identité doit être classé dans un sous-dossier précis selon son type (ex: 'Identité > Carte nationale d'identité', 'Identité > Passeport'), pas directement dans 'Identité'. Un document médical doit préciser le type ou le praticien si identifiable (ex: 'Santé > Médecin traitant', 'Santé > Analyses'). Si tu identifies un élément spécifique dans le document (nom d'entreprise, type précis de document, nom de praticien...), utilise-le TOUJOURS pour créer ou choisir un sous-dossier précis plutôt que de rester au niveau générique. Si un sous-dossier quasi-identique existe déjà (singulier/pluriel ou formulation proche), réutilise-le plutôt que d'en inventer un nouveau.
+
+Règles :
+- Ne force jamais un dossier existant si aucun ne correspond au contenu : utilise nouveau_chemin_dossier à la place
+- Utilise dossier_id uniquement si un dossier listé correspond clairement (y compris singulier/pluriel ou formulation très proche)
+- Ne mets pas dossier_id et nouveau_chemin_dossier en même temps
+- nouveau_chemin_dossier doit être un tableau JSON de strings (1 à 4 segments), jamais null si tu proposes une création
+- confiance = "haute" uniquement si tu es sûr à la fois du protégé ET du dossier (ou chemin) précis ; sinon "basse"
 
 Réponds UNIQUEMENT en JSON valide, sans markdown :
-{"categorie":"Nom catégorie exacte","majeur_id":"uuid du protégé","nom_fichier":"nom_suggere.pdf"}
-
-Si tu ne peux pas déterminer une valeur, mets null pour ce champ.
-
-Catégories disponibles :
-${categoriesListe}
+{"majeur_id":"uuid","dossier_id":"uuid ou null","nouveau_chemin_dossier":["Segment 1","Segment 2"] ou null,"nom_fichier":"nom_suggere.pdf","confiance":"haute ou basse"}
 
 Protégés actifs :
 ${majeursListe}
+
+Dossiers existants par protégé (chemin complet depuis la racine) :
+${dossiersParMajeur}
 
 Fichier source : ${params.nomOriginal}
 Type MIME : ${params.typeDocument}`;
@@ -167,17 +237,9 @@ function construireMessageContent(
   return contenu;
 }
 
-function parserReponseJson(texte: string): {
-  categorie?: string | null;
-  majeur_id?: string | null;
-  nom_fichier?: string | null;
-} | null {
+function parserReponseJson(texte: string): ReponseClassificationJson | null {
   try {
-    return JSON.parse(texte) as {
-      categorie?: string | null;
-      majeur_id?: string | null;
-      nom_fichier?: string | null;
-    };
+    return JSON.parse(texte) as ReponseClassificationJson;
   } catch {
     const debut = texte.indexOf("{");
     const fin = texte.lastIndexOf("}");
@@ -186,15 +248,39 @@ function parserReponseJson(texte: string): {
     }
 
     try {
-      return JSON.parse(texte.slice(debut, fin + 1)) as {
-        categorie?: string | null;
-        majeur_id?: string | null;
-        nom_fichier?: string | null;
-      };
+      return JSON.parse(
+        texte.slice(debut, fin + 1),
+      ) as ReponseClassificationJson;
     } catch {
       return null;
     }
   }
+}
+
+function interpreterProposition(
+  json: ReponseClassificationJson,
+  params: ProposerDocumentParams,
+): PropositionDocumentIA {
+  const majeurId =
+    json.majeur_id && json.majeur_id !== "null"
+      ? resoudreMajeurId(json.majeur_id, params.majeurs)
+      : null;
+
+  const gedDossierId =
+    json.dossier_id && json.dossier_id !== "null"
+      ? resoudreDossierId(json.dossier_id, majeurId, params.dossiers)
+      : null;
+
+  const nouveauCheminDossier = !gedDossierId
+    ? normaliserNouveauCheminDossier(json)
+    : null;
+
+  const nomFichier =
+    json.nom_fichier && json.nom_fichier !== "null"
+      ? json.nom_fichier.trim()
+      : null;
+
+  return { gedDossierId, majeurId, nomFichier, nouveauCheminDossier };
 }
 
 export async function proposerDocumentNonClasse(
@@ -204,7 +290,12 @@ export async function proposerDocumentNonClasse(
 
   if (!apiKey) {
     console.error("[proposerDocumentNonClasse] ANTHROPIC_API_KEY manquante");
-    return { categorieId: null, majeurId: null, nomFichier: null };
+    return {
+      gedDossierId: null,
+      majeurId: null,
+      nomFichier: null,
+      nouveauCheminDossier: null,
+    };
   }
 
   try {
@@ -217,7 +308,7 @@ export async function proposerDocumentNonClasse(
       },
       body: JSON.stringify({
         model: CLAUDE_MODEL_HAIKU,
-        max_tokens: 256,
+        max_tokens: 512,
         messages: [
           { role: "user", content: construireMessageContent(params) },
         ],
@@ -229,7 +320,12 @@ export async function proposerDocumentNonClasse(
         "[proposerDocumentNonClasse] Erreur API:",
         await response.text(),
       );
-      return { categorieId: null, majeurId: null, nomFichier: null };
+      return {
+        gedDossierId: null,
+        majeurId: null,
+        nomFichier: null,
+        nouveauCheminDossier: null,
+      };
     }
 
     const result = (await response.json()) as {
@@ -241,27 +337,22 @@ export async function proposerDocumentNonClasse(
     const json = parserReponseJson(texte);
 
     if (!json) {
-      return { categorieId: null, majeurId: null, nomFichier: null };
+      return {
+        gedDossierId: null,
+        majeurId: null,
+        nomFichier: null,
+        nouveauCheminDossier: null,
+      };
     }
 
-    const categorieId =
-      json.categorie && json.categorie !== "null"
-        ? resoudreCategorieId(json.categorie, params.categories)
-        : null;
-
-    const majeurId =
-      json.majeur_id && json.majeur_id !== "null"
-        ? resoudreMajeurId(json.majeur_id, params.majeurs)
-        : null;
-
-    const nomFichier =
-      json.nom_fichier && json.nom_fichier !== "null"
-        ? json.nom_fichier.trim()
-        : null;
-
-    return { categorieId, majeurId, nomFichier };
+    return interpreterProposition(json, params);
   } catch (error) {
     console.error("[proposerDocumentNonClasse] Erreur:", error);
-    return { categorieId: null, majeurId: null, nomFichier: null };
+    return {
+      gedDossierId: null,
+      majeurId: null,
+      nomFichier: null,
+      nouveauCheminDossier: null,
+    };
   }
 }

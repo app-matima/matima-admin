@@ -1,6 +1,6 @@
 import type {
-  CategorieDocument,
   DocumentNonClasse,
+  GedDossier,
   MajeurActif,
 } from "@/types/documents";
 import type { ScanGedOrganisationContext } from "@/types/scan-ged";
@@ -53,7 +53,8 @@ export async function uploadScanGedDocuments(
 
 export async function validerScanGedDocument(params: {
   documentId: string;
-  categorieId: string;
+  gedDossierId: string | null;
+  nouveauCheminDossier: string[] | null;
   majeurId: string;
   nom: string;
 }): Promise<DocumentNonClasse> {
@@ -63,7 +64,8 @@ export async function validerScanGedDocument(params: {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        categorieId: params.categorieId,
+        gedDossierId: params.gedDossierId,
+        nouveauCheminDossier: params.nouveauCheminDossier,
         majeurId: params.majeurId,
         nom: params.nom,
       }),
@@ -84,7 +86,8 @@ export async function validerScanGedDocument(params: {
 export async function validerTousScanGedDocuments(
   documents: {
     documentId: string;
-    categorieId: string;
+    gedDossierId: string | null;
+    nouveauCheminDossier: string[] | null;
     majeurId: string;
     nom: string;
   }[],
@@ -108,4 +111,4 @@ export async function validerTousScanGedDocuments(
   return { succes: data.succes ?? 0, erreurs: data.erreurs };
 }
 
-export type { CategorieDocument, DocumentNonClasse, MajeurActif };
+export type { DocumentNonClasse, GedDossier, MajeurActif };

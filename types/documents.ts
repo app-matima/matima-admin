@@ -6,11 +6,22 @@ export interface CategorieDocument {
   created_at?: string;
 }
 
+export interface GedDossier {
+  id: string;
+  organisation_id: string;
+  majeur_id: string;
+  parent_id?: string | null;
+  nom: string;
+  cree_par_ia?: boolean;
+  created_at?: string;
+}
+
 export interface Document {
   id: string;
   organisation_id: string;
   majeur_id?: string | null;
   categorie_id?: string | null;
+  ged_dossier_id?: string | null;
   storage_path: string;
   type_document: string;
   nom_original: string;
@@ -19,19 +30,31 @@ export interface Document {
   date_document?: string | null;
   proposition_categorie_id?: string | null;
   proposition_majeur_id?: string | null;
+  proposition_ged_dossier_id?: string | null;
+  proposition_nouveau_chemin_dossier?: string[] | null;
+  proposition_suggestion_dossier_existant?: {
+    id: string;
+    nom: string;
+  } | null;
   proposition_nom?: string | null;
   created_at?: string;
 }
 
 export interface PropositionDocumentIA {
-  categorieId: string | null;
+  gedDossierId: string | null;
   majeurId: string | null;
   nomFichier: string | null;
+  nouveauCheminDossier: string[] | null;
 }
 
 export interface DocumentNonClasse extends Document {
-  proposition_categorie_id?: string | null;
   proposition_majeur_id?: string | null;
+  proposition_ged_dossier_id?: string | null;
+  proposition_nouveau_chemin_dossier?: string[] | null;
+  proposition_suggestion_dossier_existant?: {
+    id: string;
+    nom: string;
+  } | null;
   proposition_nom?: string | null;
 }
 
