@@ -13,6 +13,7 @@ import {
   creerOuRecupererCheminDossier,
   resoudreDossierExistantProposition,
 } from "@/lib/documents/ged-dossiers-server";
+import { resoudreAConsulterPourDossier } from "@/lib/documents/a-consulter-server";
 import { decouperPdfAuxPagesBlanches } from "@/lib/documents/split-pdf-blank-pages";
 import { createAdminClient } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -312,6 +313,11 @@ export async function deplacerEtClasserDocument(params: {
     .from(BUCKET)
     .remove([params.document.storage_path]);
 
+  const aConsulter = await resoudreAConsulterPourDossier(adminClient, {
+    organisationId: params.document.organisation_id,
+    gedDossierId: gedDossierIdFinal,
+  });
+
   const { data, error } = await adminClient
     .from("documents")
     .update({
@@ -320,7 +326,7 @@ export async function deplacerEtClasserDocument(params: {
       categorie_id: null,
       nom_original: params.nom.trim() || params.document.nom_original,
       storage_path: nouveauChemin,
-      a_consulter: true,
+      a_consulter: aConsulter,
       proposition_categorie_id: null,
       proposition_ged_dossier_id: null,
       proposition_nouveau_chemin_dossier: null,
