@@ -299,6 +299,8 @@ function construireMediaContent(params: {
 async function appelerAnthropic(params: {
   model: string;
   maxTokens: number;
+  /** Omise pour les modèles post-Opus 4.6 (ex. Sonnet 5) qui rejettent temperature. */
+  temperature?: number;
   system?:
     | string
     | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }[];
@@ -323,7 +325,9 @@ async function appelerAnthropic(params: {
       body: JSON.stringify({
         model: params.model,
         max_tokens: params.maxTokens,
-        temperature: 0,
+        ...(params.temperature !== undefined
+          ? { temperature: params.temperature }
+          : {}),
         ...(params.system ? { system: params.system } : {}),
         messages: params.messages,
       }),
@@ -437,6 +441,7 @@ export async function identifierProtege(params: {
   const reponse = await appelerAnthropic({
     model: modeleClassificationProtege(),
     maxTokens: 300,
+    temperature: 0,
     label: "identifierProtege",
     messages: [
       {
