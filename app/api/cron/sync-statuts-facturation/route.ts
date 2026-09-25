@@ -4,6 +4,7 @@ import {
   mapPennylaneToStatutFacturation,
 } from "@/lib/pennylane/client";
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import type { StatutFacturation } from "@/types";
 
 export const runtime = "nodejs";
@@ -49,14 +50,17 @@ export async function GET(request: Request) {
 
   const supabase = createAdminClient();
 
-  const { data, error } = await supabase
-    .from("prestations_commandes")
-    .select("id, pennylane_invoice_id, statut_facturation")
-    .not("pennylane_invoice_id", "is", null)
-    .neq("pennylane_invoice_id", "")
-    .neq("statut_facturation", "payee");
-
-  if (error) {
+  let prestations: PrestationASync[];
+  try {
+    prestations = await chargerToutesLesLignes<PrestationASync>(() =>
+      supabase
+        .from("prestations_commandes")
+        .select("id, pennylane_invoice_id, statut_facturation")
+        .not("pennylane_invoice_id", "is", null)
+        .neq("pennylane_invoice_id", "")
+        .neq("statut_facturation", "payee"),
+    );
+  } catch (error) {
     console.error("[sync-statuts-facturation] fetch", error);
     return NextResponse.json(
       { error: "Impossible de lire les prestations à synchroniser." },
@@ -64,7 +68,6 @@ export async function GET(request: Request) {
     );
   }
 
-  const prestations = (data ?? []) as PrestationASync[];
   const resultats: ResultatSync[] = [];
   let misesAJour = 0;
   let erreurs = 0;
@@ -113,7 +116,8 @@ export async function GET(request: Request) {
       const message =
         syncError instanceof Error ? syncError.message : "Erreur inconnue";
       console.error(
-        `[sync-statuts-facturation] prestation ${prestation.id}`,
+        "[sync-statuts-facturation] prestation erreur:",
+        prestation.id,
         message,
       );
       resultats.push({

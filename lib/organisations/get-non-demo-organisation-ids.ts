@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 
 /**
  * Organisations visibles dans l'admin :
@@ -7,16 +8,18 @@ import { createAdminClient } from "@/lib/supabase/server";
 export async function getNonDemoOrganisationIds(): Promise<string[]> {
   const supabase = createAdminClient();
 
-  const { data, error } = await supabase
-    .from("organisations")
-    .select("id")
-    .eq("is_demo", false)
-    .eq("est_compte_test", false);
+  try {
+    const organisations = await chargerToutesLesLignes<{ id: string }>(() =>
+      supabase
+        .from("organisations")
+        .select("id")
+        .eq("is_demo", false)
+        .eq("est_compte_test", false),
+    );
 
-  if (error) {
+    return organisations.map((organisation) => organisation.id);
+  } catch (error) {
     console.error("getNonDemoOrganisationIds", error);
     return [];
   }
-
-  return (data ?? []).map((organisation) => organisation.id as string);
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Eye, FileUp, Loader2, Sparkles, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
 import { GedDossierSelect } from "@/components/scan-ged/ged-dossier-select";
@@ -15,7 +15,10 @@ import {
   formatSegmentsCheminBreadcrumb,
 } from "@/lib/documents/ged-dossier-utils";
 import {
+  fetchDossiersProtege,
   fetchScanGedContext,
+  proposerDossierScanGedDocument,
+  reessayerClassementScanGedDocument,
   supprimerScanGedDocument,
   uploadScanGedDocuments,
   validerScanGedDocument,
@@ -24,6 +27,12 @@ import {
   type GedDossier,
   type MajeurActif,
 } from "@/lib/scan-ged/client";
+import {
+  STATUT_CLASSEMENT_CLASSE,
+  STATUT_CLASSEMENT_ECHEC,
+  STATUT_CLASSEMENT_EN_ATTENTE,
+} from "@/lib/documents/scan-ged-file-attente";
+import type { StatutClassementDocument } from "@/types/documents";
 import { cn } from "@/lib/utils";
 import type { ScanGedOrganisation } from "@/types/scan-ged";
 
@@ -40,6 +49,8 @@ interface LigneDocument {
   propositionMajeurId?: string | null;
   propositionNom?: string | null;
   nouveauCheminManuel?: string[];
+  statutClassement: StatutClassementDocument | null;
+  erreurClassement: string | null;
 }
 
 interface ScanGedUploadPanelProps {
@@ -85,6 +96,14 @@ function documentVersLigne(document: DocumentNonClasse): LigneDocument {
     document.proposition_nouveau_chemin_dossier,
   );
 
+  const statutBrut = document.statut_classement;
+  const statutClassement: StatutClassementDocument | null =
+    statutBrut === STATUT_CLASSEMENT_EN_ATTENTE ||
+    statutBrut === STATUT_CLASSEMENT_CLASSE ||
+    statutBrut === STATUT_CLASSEMENT_ECHEC
+      ? statutBrut
+      : STATUT_CLASSEMENT_CLASSE;
+
   return {
     documentId: document.id,
     storagePath: document.storage_path,
@@ -101,6 +120,8 @@ function documentVersLigne(document: DocumentNonClasse): LigneDocument {
     ),
     propositionMajeurId: document.proposition_majeur_id,
     propositionNom: document.proposition_nom,
+    statutClassement,
+    erreurClassement: document.erreur_classement?.trim() || null,
   };
 }
 
@@ -142,6 +163,10 @@ function ligneVersParamsValidation(ligne: LigneDocument) {
 }
 
 function lignePreteAValider(ligne: LigneDocument): boolean {
+  if (ligne.statutClassement !== STATUT_CLASSEMENT_CLASSE) {
+    return false;
+  }
+
   return (
     Boolean(ligne.majeurId) &&
     Boolean(ligne.nom.trim()) &&
@@ -219,7 +244,12 @@ export function ScanGedUploadPanel({
   onChangeMjpm,
 }: ScanGedUploadPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [dossiers, setDossiers] = useState<GedDossier[]>([]);
+  const [dossiersParMajeur, setDossiersParMajeur] = useState<
+    Record<string, GedDossier[]>
+  >({});
+  const [chargementDossiersMajeurId, setChargementDossiersMajeurId] = useState<
+    string | null
+  >(null);
   const [majeurs, setMajeurs] = useState<MajeurActif[]>([]);
   const [lignes, setLignes] = useState<LigneDocument[]>([]);
   const [chargement, setChargement] = useState(true);
@@ -235,16 +265,44 @@ export function ScanGedUploadPanel({
   const [message, setMessage] = useState<string | null>(null);
   const [glisserActif, setGlisserActif] = useState(false);
   const [previewLigne, setPreviewLigne] = useState<LigneDocument | null>(null);
+  const [progressionClassement, setProgressionClassement] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [reessaiDocumentId, setReessaiDocumentId] = useState<string | null>(
+    null,
+  );
 
-  const dossiersParMajeur = useMemo(() => {
-    const map: Record<string, GedDossier[]> = {};
-    for (const dossier of dossiers) {
-      const liste = map[dossier.majeur_id] ?? [];
-      liste.push(dossier);
-      map[dossier.majeur_id] = liste;
-    }
-    return map;
-  }, [dossiers]);
+  const assurerDossiersProtege = useCallback(
+    async (majeurId: string): Promise<GedDossier[]> => {
+      if (!majeurId) {
+        return [];
+      }
+
+      const dejaCharges = dossiersParMajeur[majeurId];
+      if (dejaCharges) {
+        return dejaCharges;
+      }
+
+      setChargementDossiersMajeurId(majeurId);
+      try {
+        const dossiers = await fetchDossiersProtege(
+          organisation.organisationId,
+          majeurId,
+        );
+        setDossiersParMajeur((courant) => ({
+          ...courant,
+          [majeurId]: dossiers,
+        }));
+        return dossiers;
+      } finally {
+        setChargementDossiersMajeurId((courant) =>
+          courant === majeurId ? null : courant,
+        );
+      }
+    },
+    [dossiersParMajeur, organisation.organisationId],
+  );
 
   const chargerDonnees = useCallback(async () => {
     setChargement(true);
@@ -252,9 +310,32 @@ export function ScanGedUploadPanel({
 
     try {
       const contexte = await fetchScanGedContext(organisation.organisationId);
-      setDossiers(contexte.dossiers);
       setMajeurs(contexte.majeurs);
-      setLignes(contexte.documents.map(documentVersLigne));
+      const nouvellesLignes = contexte.documents.map(documentVersLigne);
+      setLignes(nouvellesLignes);
+
+      const majeursACharger = [
+        ...new Set(
+          nouvellesLignes
+            .flatMap((ligne) => [ligne.majeurId, ligne.propositionMajeurId])
+            .filter((id): id is string => Boolean(id)),
+        ),
+      ];
+
+      if (majeursACharger.length > 0) {
+        const charges = await Promise.all(
+          majeursACharger.map(async (majeurId) => {
+            const dossiers = await fetchDossiersProtege(
+              organisation.organisationId,
+              majeurId,
+            );
+            return [majeurId, dossiers] as const;
+          }),
+        );
+        setDossiersParMajeur(Object.fromEntries(charges));
+      } else {
+        setDossiersParMajeur({});
+      }
     } catch (error) {
       setErreur(
         error instanceof Error
@@ -281,6 +362,52 @@ export function ScanGedUploadPanel({
     );
   }
 
+  async function changerProtegeLigne(
+    ligne: LigneDocument,
+    nouveauMajeurId: string,
+  ) {
+    if (ligne.statutClassement !== STATUT_CLASSEMENT_CLASSE) {
+      return;
+    }
+
+    if (!nouveauMajeurId) {
+      mettreAJourLigne(ligne.documentId, {
+        majeurId: "",
+        gedDossierId: "",
+        nouveauCheminManuel: undefined,
+      });
+      return;
+    }
+
+    mettreAJourLigne(ligne.documentId, {
+      majeurId: nouveauMajeurId,
+      gedDossierId: "",
+      nouveauCheminManuel: undefined,
+    });
+
+    try {
+      const documentMisAJour = await proposerDossierScanGedDocument({
+        organisationId: organisation.organisationId,
+        documentId: ligne.documentId,
+        majeurId: nouveauMajeurId,
+      });
+
+      const ligneMiseAJour = documentVersLigne(documentMisAJour);
+      mettreAJourLigne(ligne.documentId, {
+        ...ligneMiseAJour,
+        majeurId: nouveauMajeurId,
+      });
+      await assurerDossiersProtege(nouveauMajeurId);
+    } catch (error) {
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de proposer un dossier pour ce protégé.",
+      );
+      await assurerDossiersProtege(nouveauMajeurId);
+    }
+  }
+
   async function traiterFichiers(fichiers: FileList | File[]) {
     const liste = Array.from(fichiers).filter((fichier) => {
       const type = fichier.type;
@@ -300,21 +427,27 @@ export function ScanGedUploadPanel({
     setImportEnCours(true);
     setErreur(null);
     setMessage(null);
+    setProgressionClassement({ fait: 0, total: liste.length });
 
     try {
       const resultat = await uploadScanGedDocuments(
         organisation.organisationId,
         liste,
+        {
+          onProgress: (progress) => setProgressionClassement(progress),
+        },
       );
-      // Recharger dossiers (nouveaux chemins pas encore créés) + docs
-      const contexte = await fetchScanGedContext(organisation.organisationId);
-      setDossiers(contexte.dossiers);
-      setMajeurs(contexte.majeurs);
-      setLignes(contexte.documents.map(documentVersLigne));
+      await chargerDonnees();
 
       const nb = resultat.documents.length;
+      const nbEchecs = resultat.documents.filter(
+        (doc) => doc.statut_classement === STATUT_CLASSEMENT_ECHEC,
+      ).length;
+
       setMessage(
-        `${nb} document${nb > 1 ? "s" : ""} importé${nb > 1 ? "s" : ""} et classifié${nb > 1 ? "s" : ""} par l'IA.`,
+        nbEchecs > 0
+          ? `${nb} document${nb > 1 ? "s" : ""} traité${nb > 1 ? "s" : ""} (${nbEchecs} échec${nbEchecs > 1 ? "s" : ""}).`
+          : `${nb} document${nb > 1 ? "s" : ""} importé${nb > 1 ? "s" : ""} et classifié${nb > 1 ? "s" : ""} par l'IA.`,
       );
 
       if (resultat.erreurs?.length) {
@@ -328,6 +461,53 @@ export function ScanGedUploadPanel({
       );
     } finally {
       setImportEnCours(false);
+      setProgressionClassement(null);
+    }
+  }
+
+  async function handleReessayerLigne(ligne: LigneDocument) {
+    setReessaiDocumentId(ligne.documentId);
+    setErreur(null);
+    setMessage(null);
+
+    mettreAJourLigne(ligne.documentId, {
+      statutClassement: STATUT_CLASSEMENT_EN_ATTENTE,
+      erreurClassement: null,
+    });
+
+    try {
+      const document = await reessayerClassementScanGedDocument({
+        organisationId: organisation.organisationId,
+        documentId: ligne.documentId,
+      });
+      const ligneMiseAJour = documentVersLigne(document);
+      mettreAJourLigne(ligne.documentId, ligneMiseAJour);
+      if (ligneMiseAJour.majeurId) {
+        await assurerDossiersProtege(ligneMiseAJour.majeurId);
+      }
+      if (ligneMiseAJour.statutClassement === STATUT_CLASSEMENT_ECHEC) {
+        setErreur(
+          ligneMiseAJour.erreurClassement ??
+            "Le classement a de nouveau échoué.",
+        );
+      } else {
+        setMessage("Document reclassé.");
+      }
+    } catch (error) {
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de relancer le classement.",
+      );
+      mettreAJourLigne(ligne.documentId, {
+        statutClassement: STATUT_CLASSEMENT_ECHEC,
+        erreurClassement:
+          error instanceof Error
+            ? error.message
+            : "Impossible de relancer le classement.",
+      });
+    } finally {
+      setReessaiDocumentId(null);
     }
   }
 
@@ -349,9 +529,16 @@ export function ScanGedUploadPanel({
       setLignes((courantes) =>
         courantes.filter((item) => item.documentId !== ligne.documentId),
       );
-      // Dossiers peuvent avoir été créés
-      const contexte = await fetchScanGedContext(organisation.organisationId);
-      setDossiers(contexte.dossiers);
+      if (ligne.majeurId) {
+        const dossiers = await fetchDossiersProtege(
+          organisation.organisationId,
+          ligne.majeurId,
+        );
+        setDossiersParMajeur((courant) => ({
+          ...courant,
+          [ligne.majeurId]: dossiers,
+        }));
+      }
       setMessage("Document classé dans la GED.");
     } catch (error) {
       setErreur(
@@ -416,8 +603,6 @@ export function ScanGedUploadPanel({
       setLignes((courantes) =>
         courantes.filter((ligne) => !idsValides.has(ligne.documentId)),
       );
-      const contexte = await fetchScanGedContext(organisation.organisationId);
-      setDossiers(contexte.dossiers);
       setMessage(`${resultat.succes} document(s) classé(s) dans la GED.`);
 
       if (resultat.erreurs?.length) {
@@ -519,6 +704,39 @@ export function ScanGedUploadPanel({
         </button>
       </div>
 
+      {progressionClassement && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-text-strong">
+              Classement IA en cours…
+            </p>
+            <p className="text-sm text-text-muted">
+              {progressionClassement.fait}/{progressionClassement.total}{" "}
+              document
+              {progressionClassement.total > 1 ? "s" : ""} classé
+              {progressionClassement.total > 1 ? "s" : ""}
+            </p>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-page">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-300"
+              style={{
+                width: `${
+                  progressionClassement.total > 0
+                    ? Math.min(
+                        100,
+                        (progressionClassement.fait /
+                          progressionClassement.total) *
+                          100,
+                      )
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {erreur && (
         <div className="rounded-xl border border-[#FECACA] bg-[#FEF2F2] p-4">
           <p className="text-sm text-[#991B1B]">{erreur}</p>
@@ -599,11 +817,45 @@ export function ScanGedUploadPanel({
               !ligne.propositionGedDossierId &&
               Boolean(ligne.propositionNouveauCheminDossier?.length);
 
+            const estClasse =
+              ligne.statutClassement === STATUT_CLASSEMENT_CLASSE;
+            const estEchec =
+              ligne.statutClassement === STATUT_CLASSEMENT_ECHEC;
+            const estEnAttente =
+              ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE;
+
             return (
               <div
                 key={ligne.documentId}
-                className="rounded-xl border border-border bg-card p-4 sm:p-5"
+                className={cn(
+                  "rounded-xl border bg-card p-4 sm:p-5",
+                  estEchec
+                    ? "border-[#FECACA]"
+                    : estEnAttente
+                      ? "border-[#FDE68A]"
+                      : "border-border",
+                )}
               >
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  {estEnAttente && (
+                    <Badge variant="warning">En attente de classement</Badge>
+                  )}
+                  {estEchec && (
+                    <Badge variant="danger">Échec de classement</Badge>
+                  )}
+                  {estClasse && (
+                    <Badge variant="success">Classé — à valider</Badge>
+                  )}
+                </div>
+
+                {estEchec && ligne.erreurClassement && (
+                  <div className="mb-3 rounded-lg border border-[#FECACA] bg-[#FEF2F2] px-3 py-2">
+                    <p className="text-xs text-[#991B1B]">
+                      {ligne.erreurClassement}
+                    </p>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[1.2fr_1fr_1.4fr_auto]">
                   <div>
                     <label
@@ -620,7 +872,8 @@ export function ScanGedUploadPanel({
                           nom: event.target.value,
                         })
                       }
-                      className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+                      disabled={!estClasse}
+                      className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
                     />
                   </div>
 
@@ -635,17 +888,13 @@ export function ScanGedUploadPanel({
                       id={`majeur-${ligne.documentId}`}
                       value={ligne.majeurId}
                       onChange={(event) => {
-                        const nouveauMajeurId = event.target.value;
-                        mettreAJourLigne(ligne.documentId, {
-                          majeurId: nouveauMajeurId,
-                          gedDossierId: ligne.propositionNouveauCheminDossier
-                            ?.length
-                            ? NOUVEAU_DOSSIER_SELECTION
-                            : "",
-                          nouveauCheminManuel: undefined,
-                        });
+                        void changerProtegeLigne(ligne, event.target.value);
                       }}
-                      className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
+                      disabled={
+                        !estClasse ||
+                        chargementDossiersMajeurId === ligne.majeurId
+                      }
+                      className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
                     >
                       <option value="">Sélectionner…</option>
                       {majeurs.map((majeur) => (
@@ -680,10 +929,25 @@ export function ScanGedUploadPanel({
                             : undefined,
                       })
                     }
-                    disabled={!ligne.majeurId}
+                    disabled={!estClasse || !ligne.majeurId}
                   />
 
                   <div className="flex flex-wrap gap-2 lg:justify-end lg:pt-6">
+                    {estEchec && (
+                      <button
+                        type="button"
+                        onClick={() => void handleReessayerLigne(ligne)}
+                        disabled={
+                          reessaiDocumentId === ligne.documentId ||
+                          importEnCours
+                        }
+                        className="rounded-lg border border-[#FDE68A] bg-[#FFFBEB] px-3 py-2 text-sm font-medium text-[#B45309] transition-colors hover:bg-[#FEF3C7] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {reessaiDocumentId === ligne.documentId
+                          ? "Nouvelle tentative…"
+                          : "Réessayer"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => setPreviewLigne(ligne)}
@@ -700,7 +964,8 @@ export function ScanGedUploadPanel({
                         suppressionDocumentId === ligne.documentId ||
                         validationDocumentId === ligne.documentId ||
                         validationEnCours ||
-                        importEnCours
+                        importEnCours ||
+                        reessaiDocumentId === ligne.documentId
                       }
                       className="rounded-lg border border-[#FECACA] px-3 py-2 text-sm font-medium text-[#991B1B] transition-colors hover:bg-[#FEF2F2] disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -731,7 +996,7 @@ export function ScanGedUploadPanel({
                   </div>
                 </div>
 
-                {(cheminIa || propositionMajeur) && (
+                {(cheminIa || propositionMajeur) && estClasse && (
                   <div className="mt-3 space-y-1.5 rounded-lg border border-border bg-page/60 px-3 py-2.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <Sparkles className="h-4 w-4 text-accent" />

@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { Plan } from "@/lib/clients/plans";
 import type {
@@ -41,6 +42,7 @@ interface PlanRow {
 }
 
 interface MajeurRow {
+  id: string;
   organisation_id: string;
   statut: string;
 }
@@ -138,65 +140,70 @@ export async function getAllClients(): Promise<ClientListItem[]> {
     return [];
   }
 
-  const [organisationsResult, majeursResult, mjpmResult] = await Promise.all([
-    supabase
-      .from("organisations")
-      .select(ORGANISATION_LIST_SELECT)
-      .in("id", organisationIds)
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("majeurs")
-      .select("organisation_id, statut")
-      .in("organisation_id", organisationIds),
-    supabase
-      .from("utilisateurs")
-      .select("id, organisation_id, role")
-      .in("organisation_id", organisationIds)
-      .eq("role", "mjpm"),
-  ]);
+  try {
+    const [organisations, majeursRows, mjpmRows] = await Promise.all([
+      chargerToutesLesLignes<OrganisationListRow>(() =>
+        supabase
+          .from("organisations")
+          .select(ORGANISATION_LIST_SELECT)
+          .in("id", organisationIds),
+      ),
+      chargerToutesLesLignes<MajeurRow>(() =>
+        supabase
+          .from("majeurs")
+          .select("id, organisation_id, statut")
+          .in("organisation_id", organisationIds),
+      ),
+      chargerToutesLesLignes<UtilisateurRow>(() =>
+        supabase
+          .from("utilisateurs")
+          .select("id, organisation_id, role")
+          .in("organisation_id", organisationIds)
+          .eq("role", "mjpm"),
+      ),
+    ]);
 
-  if (organisationsResult.error) {
-    console.error("getAllClients organisations", organisationsResult.error);
+    const organisationsTriees = [...organisations].sort((a, b) =>
+      String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")),
+    );
+
+    const mjpmParOrganisation = new Map<string, UtilisateurRow>();
+    for (const utilisateur of mjpmRows) {
+      if (!mjpmParOrganisation.has(utilisateur.organisation_id)) {
+        mjpmParOrganisation.set(utilisateur.organisation_id, utilisateur);
+      }
+    }
+
+    const mjpmProfiles = await enrichMjpmProfiles(
+      Array.from(mjpmParOrganisation.values()),
+    );
+
+    const protegesActifsParOrg = new Map<string, number>();
+    for (const majeur of majeursRows) {
+      if (majeur.statut === "actif") {
+        protegesActifsParOrg.set(
+          majeur.organisation_id,
+          (protegesActifsParOrg.get(majeur.organisation_id) ?? 0) + 1,
+        );
+      }
+    }
+
+    return organisationsTriees.map((organisation) => {
+      const plan = resolvePlan(organisation.plan_id, organisation.plans);
+
+      return {
+        organisationId: organisation.id,
+        mjpm: mjpmProfiles.get(organisation.id) ?? null,
+        created_at: organisation.created_at,
+        protegesActifs: protegesActifsParOrg.get(organisation.id) ?? 0,
+        plan,
+        plan_id: organisation.plan_id,
+      };
+    });
+  } catch (error) {
+    console.error("getAllClients", error);
     return [];
   }
-
-  const organisations = (organisationsResult.data ?? []) as OrganisationListRow[];
-  const majeurs = (majeursResult.data ?? []) as MajeurRow[];
-  const mjpmUtilisateurs = (mjpmResult.data ?? []) as UtilisateurRow[];
-
-  const mjpmParOrganisation = new Map<string, UtilisateurRow>();
-  for (const utilisateur of mjpmUtilisateurs) {
-    if (!mjpmParOrganisation.has(utilisateur.organisation_id)) {
-      mjpmParOrganisation.set(utilisateur.organisation_id, utilisateur);
-    }
-  }
-
-  const mjpmProfiles = await enrichMjpmProfiles(
-    Array.from(mjpmParOrganisation.values()),
-  );
-
-  const protegesActifsParOrg = new Map<string, number>();
-  for (const majeur of majeurs) {
-    if (majeur.statut === "actif") {
-      protegesActifsParOrg.set(
-        majeur.organisation_id,
-        (protegesActifsParOrg.get(majeur.organisation_id) ?? 0) + 1,
-      );
-    }
-  }
-
-  return organisations.map((organisation) => {
-    const plan = resolvePlan(organisation.plan_id, organisation.plans);
-
-    return {
-      organisationId: organisation.id,
-      mjpm: mjpmProfiles.get(organisation.id) ?? null,
-      created_at: organisation.created_at,
-      protegesActifs: protegesActifsParOrg.get(organisation.id) ?? 0,
-      plan,
-      plan_id: organisation.plan_id,
-    };
-  });
 }
 
 export async function getClientDetail(
@@ -227,10 +234,15 @@ export async function getClientDetail(
       .eq("role", "mjpm")
       .limit(1)
       .maybeSingle(),
-    supabase
-      .from("majeurs")
-      .select("statut")
-      .eq("organisation_id", organisationId),
+    chargerToutesLesLignes<{ id: string; statut: string }>(() =>
+      supabase
+        .from("majeurs")
+        .select("id, statut")
+        .eq("organisation_id", organisationId),
+    ).catch((error: unknown) => {
+      console.error("getClientDetail majeurs", error);
+      return [] as { id: string; statut: string }[];
+    }),
     supabase
       .from("prestations_commandes")
       .select(
@@ -255,7 +267,7 @@ export async function getClientDetail(
   }
 
   const organisation = organisationResult.data as OrganisationDetailRow;
-  const majeurs = (majeursResult.data ?? []) as { statut: string }[];
+  const majeurs = majeursResult;
   const plan = resolvePlan(organisation.plan_id, organisation.plans);
 
   const protegesParStatut = emptyProtegesParStatut();

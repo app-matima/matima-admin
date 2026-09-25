@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { PrestationAvecRelations } from "@/types";
 
@@ -17,18 +18,22 @@ export async function getAllPrestations(): Promise<PrestationAvecRelations[]> {
     return [];
   }
 
-  const { data, error } = await supabase
-    .from("prestations_commandes")
-    .select(PRESTATION_SELECT)
-    .in("organisation_id", organisationIds)
-    .order("created_at", { ascending: false });
+  try {
+    const prestations = await chargerToutesLesLignes<PrestationAvecRelations>(
+      () =>
+        supabase
+          .from("prestations_commandes")
+          .select(PRESTATION_SELECT)
+          .in("organisation_id", organisationIds),
+    );
 
-  if (error) {
+    return [...prestations].sort((a, b) =>
+      String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")),
+    );
+  } catch (error) {
     console.error("getAllPrestations", error);
     return [];
   }
-
-  return (data ?? []) as PrestationAvecRelations[];
 }
 
 export async function getPrestationById(

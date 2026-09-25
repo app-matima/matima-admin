@@ -3,6 +3,7 @@ import {
   formatCheminDossier,
   nomsDossiersQuasiIdentiques,
 } from "@/lib/documents/ged-dossier-utils";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import type { GedDossier } from "@/types/documents";
 
 export interface DossierOrganisationRow {
@@ -74,25 +75,25 @@ export async function creerOuRecupererDossier(
     throw new Error("Le nom du dossier est obligatoire.");
   }
 
-  let query = adminClient
-    .from("ged_dossiers")
-    .select("id, nom")
-    .eq("organisation_id", params.organisationId)
-    .eq("majeur_id", params.majeurId);
+  const existants = await chargerToutesLesLignes<{ id: string; nom: string }>(
+    () => {
+      let requete = adminClient
+        .from("ged_dossiers")
+        .select("id, nom")
+        .eq("organisation_id", params.organisationId)
+        .eq("majeur_id", params.majeurId);
 
-  if (params.parentId === null) {
-    query = query.is("parent_id", null);
-  } else {
-    query = query.eq("parent_id", params.parentId);
-  }
+      if (params.parentId === null) {
+        requete = requete.is("parent_id", null);
+      } else {
+        requete = requete.eq("parent_id", params.parentId);
+      }
 
-  const { data: existants, error: lectureError } = await query;
+      return requete;
+    },
+  );
 
-  if (lectureError) {
-    throw new Error(lectureError.message);
-  }
-
-  const dejaPresent = (existants ?? []).find((dossier) =>
+  const dejaPresent = existants.find((dossier) =>
     nomsDossiersQuasiIdentiques(dossier.nom, nom),
   );
   if (dejaPresent) {

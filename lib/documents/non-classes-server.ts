@@ -1,4 +1,8 @@
-import { proposerDocumentNonClasse } from "@/lib/claude/proposer-document-non-classe";
+import {
+  choisirDossierPourProtege,
+  proposerDocumentNonClasse,
+  type DossierPourProposition,
+} from "@/lib/claude/proposer-document-non-classe";
 import {
   buildInboxStoragePath,
   buildStoragePath,
@@ -13,11 +17,21 @@ import {
   creerOuRecupererCheminDossier,
   resoudreDossierExistantProposition,
 } from "@/lib/documents/ged-dossiers-server";
+import { chargerDossiersProtege } from "@/lib/documents/charger-dossiers-protege";
 import { resoudreAConsulterPourDossier } from "@/lib/documents/a-consulter-server";
 import { decouperPdfAuxPagesBlanches } from "@/lib/documents/split-pdf-blank-pages";
+import {
+  STATUT_CLASSEMENT_ECHEC,
+  STATUT_CLASSEMENT_EN_ATTENTE,
+  TAILLE_LOT_CLASSEMENT_DEFAUT,
+  patchStatutApresClassement,
+  traiterPaquetDocumentsIndependamment,
+  type DetailTraitementLot,
+} from "@/lib/documents/scan-ged-file-attente";
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { DocumentNonClasse } from "@/types/documents";
+import type { DocumentNonClasse, PropositionDocumentIA } from "@/types/documents";
 
 const BUCKET = "documents";
 
@@ -34,11 +48,26 @@ interface EntreeTeleversee {
   storagePath: string;
 }
 
-interface ContexteTraitement {
-  organisationId: string;
-  dossiers: DossierOrganisationRow[];
-  majeurs: MajeurRow[];
-  adminClient: SupabaseClient;
+function dossiersVersProposition(
+  dossiers: { id: string; nom: string; majeur_id: string; parent_id?: string | null }[],
+): DossierPourProposition[] {
+  return dossiers.map((dossier) => ({
+    id: dossier.id,
+    nom: dossier.nom,
+    majeur_id: dossier.majeur_id,
+    parent_id: dossier.parent_id ?? null,
+  }));
+}
+
+async function chargerDossiersPourProposition(
+  majeurId: string,
+  organisationId: string,
+): Promise<DossierPourProposition[]> {
+  const dossiers = await chargerDossiersProtege(majeurId, {
+    organisationId,
+    colonnes: "id, nom, majeur_id, parent_id",
+  });
+  return dossiersVersProposition(dossiers);
 }
 
 function estPdf(type: string, nom: string): boolean {
@@ -74,23 +103,22 @@ async function proposerDepuisBytes(params: {
   nom: string;
   typeDocument: string;
   bytes: Uint8Array;
-  dossiers: DossierOrganisationRow[];
   majeurs: MajeurRow[];
+  organisationId: string;
 }) {
-  const pdfBase64 = estPdf(params.typeDocument, params.nom)
-    ? Buffer.from(params.bytes).toString("base64")
-    : null;
-
-  const imageBase64 = !pdfBase64
+  const estPdfDoc = estPdf(params.typeDocument, params.nom);
+  const pdfBytes = estPdfDoc ? params.bytes : null;
+  const imageBase64 = !estPdfDoc
     ? Buffer.from(params.bytes).toString("base64")
     : null;
 
   return proposerDocumentNonClasse({
     nomOriginal: params.nom,
     typeDocument: params.typeDocument,
-    dossiers: params.dossiers,
     majeurs: params.majeurs,
-    pdfBase64,
+    chargerDossiers: (majeurId) =>
+      chargerDossiersPourProposition(majeurId, params.organisationId),
+    pdfBytes,
     imageBase64,
     imageMediaType: params.typeDocument.startsWith("image/")
       ? params.typeDocument
@@ -98,43 +126,383 @@ async function proposerDepuisBytes(params: {
   });
 }
 
-async function insererDocumentAvecProposition(
+async function insererDocumentEnAttenteClassement(
   entree: EntreeTeleversee,
-  proposition: Awaited<ReturnType<typeof proposerDepuisBytes>>,
-  gedDossierId: string | null,
-  propositionNouveauCheminDossier: string[] | null,
-  suggestionDossierExistant: SuggestionDossierExistant | null,
-  contexte: ContexteTraitement,
+  organisationId: string,
+  adminClient: SupabaseClient,
   index: number,
 ): Promise<DocumentNonClasse> {
-  const { data, error } = await contexte.adminClient
+  const { data, error } = await adminClient
     .from("documents")
     .insert({
-      organisation_id: contexte.organisationId,
+      organisation_id: organisationId,
       majeur_id: null,
       ged_dossier_id: null,
       storage_path: entree.storagePath,
       type_document: entree.typeDocument,
-      nom_original: proposition.nomFichier ?? entree.nom,
+      nom_original: entree.nom,
       nom_fichier: `${Date.now()}_${index}_${entree.nom}`,
       taille_bytes: entree.bytes.byteLength,
-      proposition_majeur_id: proposition.majeurId,
-      proposition_ged_dossier_id: gedDossierId,
-      proposition_nouveau_chemin_dossier: propositionNouveauCheminDossier,
-      proposition_suggestion_dossier_existant: suggestionDossierExistant,
-      proposition_nom: proposition.nomFichier,
+      statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
+      erreur_classement: null,
+      proposition_majeur_id: null,
+      proposition_ged_dossier_id: null,
+      proposition_nouveau_chemin_dossier: null,
+      proposition_suggestion_dossier_existant: null,
+      proposition_nom: null,
     })
     .select("*")
     .single();
 
   if (error || !data) {
-    await contexte.adminClient.storage
-      .from(BUCKET)
-      .remove([entree.storagePath]);
+    await adminClient.storage.from(BUCKET).remove([entree.storagePath]);
     throw new Error(error?.message ?? "Impossible d'enregistrer le document.");
   }
 
   return data as DocumentNonClasse;
+}
+
+async function appliquerPropositionSurDocument(params: {
+  adminClient: SupabaseClient;
+  documentId: string;
+  organisationId: string;
+  proposition: PropositionDocumentIA;
+}): Promise<DocumentNonClasse> {
+  let dossiersProtege: DossierOrganisationRow[] = [];
+  if (params.proposition.majeurId) {
+    const charges = await chargerDossiersProtege(params.proposition.majeurId, {
+      organisationId: params.organisationId,
+      colonnes: "id, nom, majeur_id, parent_id",
+    });
+    dossiersProtege = charges.map((dossier) => ({
+      id: dossier.id,
+      nom: dossier.nom,
+      majeur_id: dossier.majeur_id,
+      parent_id: dossier.parent_id ?? null,
+    }));
+  }
+
+  const gedDossierId = resoudreDossierExistantProposition({
+    majeurId: params.proposition.majeurId,
+    gedDossierId: params.proposition.gedDossierId,
+    dossiers: dossiersProtege,
+  });
+  const propositionNouveauCheminDossier =
+    !gedDossierId && params.proposition.nouveauCheminDossier?.length
+      ? params.proposition.nouveauCheminDossier
+      : null;
+
+  const suggestionDossierExistant =
+    propositionNouveauCheminDossier && params.proposition.majeurId
+      ? trouverSuggestionDossierExistant(
+          propositionNouveauCheminDossier[0] ?? "",
+          dossiersProtege,
+        )
+      : null;
+
+  const statut = patchStatutApresClassement({ succes: true });
+
+  const majeursUpdates: Record<string, unknown> = {
+    proposition_majeur_id: params.proposition.majeurId,
+    proposition_ged_dossier_id: gedDossierId,
+    proposition_nouveau_chemin_dossier: propositionNouveauCheminDossier,
+    proposition_suggestion_dossier_existant: suggestionDossierExistant,
+    proposition_nom: params.proposition.nomFichier,
+    ...statut,
+  };
+
+  if (params.proposition.nomFichier) {
+    majeursUpdates.nom_original = params.proposition.nomFichier;
+  }
+
+  const { data, error } = await params.adminClient
+    .from("documents")
+    .update(majeursUpdates)
+    .eq("id", params.documentId)
+    .select("*")
+    .single();
+
+  if (error || !data) {
+    throw new Error(
+      error?.message ?? "Impossible d'enregistrer la proposition IA.",
+    );
+  }
+
+  return data as DocumentNonClasse;
+}
+
+async function marquerEchecClassement(params: {
+  adminClient: SupabaseClient;
+  documentId: string;
+  message: string;
+}): Promise<DocumentNonClasse | null> {
+  const statut = patchStatutApresClassement({
+    succes: false,
+    messageErreur: params.message,
+  });
+
+  const { data, error } = await params.adminClient
+    .from("documents")
+    .update(statut)
+    .eq("id", params.documentId)
+    .select("*")
+    .single();
+
+  if (error) {
+    console.error("[marquerEchecClassement]", error.message);
+    return null;
+  }
+
+  return data as DocumentNonClasse;
+}
+
+/**
+ * Upload déjà fait : découpe PDF si besoin, enregistre chaque segment
+ * en « en_attente_classement » SANS lancer l'IA.
+ */
+export async function enregistrerDocumentsInboxDepuisStoragePaths(params: {
+  storagePaths: string[];
+  organisationId: string;
+}): Promise<{ documents: DocumentNonClasse[]; erreurs: string[] }> {
+  const adminClient = createAdminClient();
+  const erreurs: string[] = [];
+  const entrees: EntreeTeleversee[] = [];
+
+  for (const storagePath of params.storagePaths) {
+    try {
+      const preparees = await preparerEntreesDepuisStoragePath(
+        storagePath,
+        params.organisationId,
+        adminClient,
+      );
+      entrees.push(...preparees);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur de préparation.";
+      erreurs.push(`${storagePath} : ${message}`);
+    }
+  }
+
+  if (entrees.length === 0) {
+    return { documents: [], erreurs };
+  }
+
+  const documents: DocumentNonClasse[] = [];
+
+  for (let index = 0; index < entrees.length; index += 1) {
+    const entree = entrees[index]!;
+    try {
+      const document = await insererDocumentEnAttenteClassement(
+        entree,
+        params.organisationId,
+        adminClient,
+        index,
+      );
+      documents.push(document);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Erreur d'enregistrement.";
+      erreurs.push(`${entree.nom} : ${message}`);
+    }
+  }
+
+  return { documents, erreurs };
+}
+
+/** @deprecated Utiliser enregistrerDocumentsInboxDepuisStoragePaths */
+export async function classerDocumentsInboxDepuisStoragePaths(params: {
+  storagePaths: string[];
+  organisationId: string;
+  majeurs?: MajeurRow[];
+}): Promise<{ documents: DocumentNonClasse[]; erreurs: string[] }> {
+  return enregistrerDocumentsInboxDepuisStoragePaths({
+    storagePaths: params.storagePaths,
+    organisationId: params.organisationId,
+  });
+}
+
+/**
+ * Compte les documents en file d'attente (pagination au-delà de 1 000).
+ */
+export async function compterDocumentsEnAttenteClassement(
+  organisationId: string,
+  adminClient: SupabaseClient = createAdminClient(),
+): Promise<number> {
+  const lignes = await chargerToutesLesLignes<{ id: string }>(() =>
+    adminClient
+      .from("documents")
+      .select("id")
+      .eq("organisation_id", organisationId)
+      .eq("statut_classement", STATUT_CLASSEMENT_EN_ATTENTE)
+      .is("majeur_id", null),
+  );
+  return lignes.length;
+}
+
+async function classerUnDocumentEnAttente(params: {
+  document: DocumentNonClasse;
+  organisationId: string;
+  majeurs: MajeurRow[];
+  adminClient: SupabaseClient;
+}): Promise<DocumentNonClasse> {
+  const { bytes, typeDocument } = await telechargerDepuisStorage(
+    params.adminClient,
+    params.document.storage_path,
+  );
+
+  const type = typeDocument || params.document.type_document;
+  const proposition = await proposerDepuisBytes({
+    nom: params.document.nom_original,
+    typeDocument: type,
+    bytes,
+    majeurs: params.majeurs,
+    organisationId: params.organisationId,
+  });
+
+  return appliquerPropositionSurDocument({
+    adminClient: params.adminClient,
+    documentId: params.document.id,
+    organisationId: params.organisationId,
+    proposition,
+  });
+}
+
+/**
+ * Traite un paquet de documents en_attente_classement (ou une liste explicite).
+ */
+export async function traiterLotClassementScanGed(params: {
+  organisationId: string;
+  taille?: number;
+  documentIds?: string[];
+}): Promise<{
+  traite: number;
+  restant: number;
+  details: DetailTraitementLot[];
+  documents: DocumentNonClasse[];
+}> {
+  const adminClient = createAdminClient();
+  const taille = Math.min(
+    Math.max(params.taille ?? TAILLE_LOT_CLASSEMENT_DEFAUT, 1),
+    20,
+  );
+
+  const majeurs = await chargerToutesLesLignes<MajeurRow>(() =>
+    adminClient
+      .from("majeurs")
+      .select("id, nom, prenom")
+      .eq("organisation_id", params.organisationId)
+      .eq("statut", "actif"),
+  );
+
+  let aTraiter: DocumentNonClasse[] = [];
+
+  if (params.documentIds && params.documentIds.length > 0) {
+    const ids = [...new Set(params.documentIds.filter(Boolean))];
+    const { data, error } = await adminClient
+      .from("documents")
+      .select("*")
+      .eq("organisation_id", params.organisationId)
+      .is("majeur_id", null)
+      .in("id", ids);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    aTraiter = (data ?? []) as DocumentNonClasse[];
+
+    // Remet en file les échecs avant retraitement
+    const aRemettre = aTraiter.filter(
+      (doc) => doc.statut_classement === STATUT_CLASSEMENT_ECHEC,
+    );
+    if (aRemettre.length > 0) {
+      await adminClient
+        .from("documents")
+        .update({
+          statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
+          erreur_classement: null,
+        })
+        .in(
+          "id",
+          aRemettre.map((doc) => doc.id),
+        );
+      aTraiter = aTraiter.map((doc) =>
+        doc.statut_classement === STATUT_CLASSEMENT_ECHEC
+          ? {
+              ...doc,
+              statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
+              erreur_classement: null,
+            }
+          : doc,
+      );
+    }
+
+    aTraiter = aTraiter.filter(
+      (doc) =>
+        doc.statut_classement === STATUT_CLASSEMENT_EN_ATTENTE ||
+        doc.statut_classement === STATUT_CLASSEMENT_ECHEC,
+    );
+  } else {
+    const { data, error } = await adminClient
+      .from("documents")
+      .select("*")
+      .eq("organisation_id", params.organisationId)
+      .eq("statut_classement", STATUT_CLASSEMENT_EN_ATTENTE)
+      .is("majeur_id", null)
+      .order("created_at", { ascending: true })
+      .limit(taille);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    aTraiter = (data ?? []) as DocumentNonClasse[];
+  }
+
+  const documentsMisAJour: DocumentNonClasse[] = [];
+
+  const details = await traiterPaquetDocumentsIndependamment(
+    aTraiter.map((doc) => ({
+      id: doc.id,
+      nom: doc.nom_original,
+      document: doc,
+    })),
+    async (item) => {
+      try {
+        const misAJour = await classerUnDocumentEnAttente({
+          document: item.document,
+          organisationId: params.organisationId,
+          majeurs,
+          adminClient,
+        });
+        documentsMisAJour.push(misAJour);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erreur de classement.";
+        const echec = await marquerEchecClassement({
+          adminClient,
+          documentId: item.id,
+          message,
+        });
+        if (echec) {
+          documentsMisAJour.push(echec);
+        }
+        throw error;
+      }
+    },
+  );
+
+  const restant = await compterDocumentsEnAttenteClassement(
+    params.organisationId,
+    adminClient,
+  );
+
+  return {
+    traite: details.length,
+    restant,
+    details,
+    documents: documentsMisAJour,
+  };
 }
 
 /**
@@ -287,93 +655,94 @@ export async function rollbackStoragePathsInbox(
   await adminClient.storage.from(BUCKET).remove(chemins);
 }
 
-export async function classerDocumentsInboxDepuisStoragePaths(params: {
-  storagePaths: string[];
+/**
+ * Appel B seul : propose un dossier pour un document déjà associé à un protégé
+ * (choix manuel admin après identification A manquante).
+ */
+export async function proposerDossierPourMajeur(params: {
+  nom: string;
+  typeDocument: string;
+  bytes: Uint8Array;
+  majeur: MajeurRow;
   organisationId: string;
-  dossiers: DossierOrganisationRow[];
-  majeurs: MajeurRow[];
-}): Promise<{ documents: DocumentNonClasse[]; erreurs: string[] }> {
-  const adminClient = createAdminClient();
-  const contexte: ContexteTraitement = {
-    organisationId: params.organisationId,
-    dossiers: params.dossiers,
-    majeurs: params.majeurs,
-    adminClient,
+}): Promise<{
+  gedDossierId: string | null;
+  nouveauCheminDossier: string[] | null;
+  nomFichier: string | null;
+  suggestionDossierExistant: SuggestionDossierExistant | null;
+}> {
+  const dossiers = await chargerDossiersPourProposition(
+    params.majeur.id,
+    params.organisationId,
+  );
+
+  const estPdfDoc = estPdf(params.typeDocument, params.nom);
+  const classement = await choisirDossierPourProtege({
+    nomOriginal: params.nom,
+    typeDocument: params.typeDocument,
+    majeur: params.majeur,
+    dossiers,
+    pdfBytes: estPdfDoc ? params.bytes : null,
+    imageBase64: !estPdfDoc
+      ? Buffer.from(params.bytes).toString("base64")
+      : null,
+    imageMediaType: params.typeDocument.startsWith("image/")
+      ? params.typeDocument
+      : undefined,
+  });
+
+  const dossierChoisi =
+    classement.gedDossierId ??
+    (classement.nouveauCheminDossier
+      ? classement.nouveauCheminDossier.join(" > ")
+      : null);
+
+  console.log(
+    "[proposerDossierPourMajeur]",
+    params.nom,
+    "majeur_id=",
+    params.majeur.id,
+    "emetteur=",
+    classement.emetteur,
+    "type_document=",
+    classement.typeDocument,
+    "famille=",
+    classement.famille,
+    "dossier=",
+    dossierChoisi,
+    "confiance_B=",
+    classement.confiance,
+    "tokens_B=",
+    classement.tokens
+      ? `in=${classement.tokens.input} out=${classement.tokens.output} cache_read=${classement.tokens.cache_read}`
+      : "n/a",
+  );
+
+  const gedDossierId = resoudreDossierExistantProposition({
+    majeurId: params.majeur.id,
+    gedDossierId: classement.gedDossierId,
+    dossiers,
+  });
+
+  const nouveauCheminDossier =
+    !gedDossierId && classement.nouveauCheminDossier?.length
+      ? classement.nouveauCheminDossier
+      : null;
+
+  const suggestionDossierExistant =
+    nouveauCheminDossier
+      ? trouverSuggestionDossierExistant(
+          nouveauCheminDossier[0] ?? "",
+          dossiers,
+        )
+      : null;
+
+  return {
+    gedDossierId,
+    nouveauCheminDossier,
+    nomFichier: classement.nomFichier,
+    suggestionDossierExistant,
   };
-
-  const erreurs: string[] = [];
-  const entrees: EntreeTeleversee[] = [];
-
-  for (const storagePath of params.storagePaths) {
-    try {
-      const preparees = await preparerEntreesDepuisStoragePath(
-        storagePath,
-        params.organisationId,
-        adminClient,
-      );
-      entrees.push(...preparees);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Erreur de préparation.";
-      erreurs.push(`${storagePath} : ${message}`);
-    }
-  }
-
-  if (entrees.length === 0) {
-    return { documents: [], erreurs };
-  }
-
-  const documents: DocumentNonClasse[] = [];
-
-  for (let index = 0; index < entrees.length; index += 1) {
-    const entree = entrees[index]!;
-    try {
-      const proposition = await proposerDepuisBytes({
-        nom: entree.nom,
-        typeDocument: entree.typeDocument,
-        bytes: entree.bytes,
-        dossiers: params.dossiers,
-        majeurs: params.majeurs,
-      });
-
-      const gedDossierId = resoudreDossierExistantProposition({
-        majeurId: proposition.majeurId,
-        gedDossierId: proposition.gedDossierId,
-        dossiers: params.dossiers,
-      });
-      const propositionNouveauCheminDossier =
-        !gedDossierId && proposition.nouveauCheminDossier?.length
-          ? proposition.nouveauCheminDossier
-          : null;
-
-      const suggestionDossierExistant =
-        propositionNouveauCheminDossier && proposition.majeurId
-          ? trouverSuggestionDossierExistant(
-              propositionNouveauCheminDossier[0] ?? "",
-              params.dossiers.filter(
-                (dossier) => dossier.majeur_id === proposition.majeurId,
-              ),
-            )
-          : null;
-
-      const document = await insererDocumentAvecProposition(
-        entree,
-        proposition,
-        gedDossierId,
-        propositionNouveauCheminDossier,
-        suggestionDossierExistant,
-        contexte,
-        index,
-      );
-      documents.push(document);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Erreur de classification.";
-      erreurs.push(`${entree.nom} : ${message}`);
-    }
-  }
-
-  return { documents, erreurs };
 }
 
 export async function deplacerEtClasserDocument(params: {
@@ -449,6 +818,7 @@ export async function deplacerEtClasserDocument(params: {
       proposition_suggestion_dossier_existant: null,
       proposition_majeur_id: null,
       proposition_nom: null,
+      erreur_classement: null,
     })
     .eq("id", params.document.id)
     .select("*")

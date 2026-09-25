@@ -1,18 +1,11 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type {
   DashboardData,
   Organisation,
   PrestationAvecRelations,
 } from "@/types";
-
-function extractCount(result: { data?: unknown[] | null; error?: unknown }, label: string): number {
-  if (result.error) {
-    console.error(label, result.error);
-    return 0;
-  }
-  return result.data?.length ?? 0;
-}
 
 export async function getDashboardData(): Promise<DashboardData> {
   const supabase = createAdminClient();
@@ -32,31 +25,56 @@ export async function getDashboardData(): Promise<DashboardData> {
   }
 
   const [
-    prestationsEnAttenteResult,
-    prestationsEnCoursResult,
-    clientsActifsResult,
-    protegesTotalResult,
+    prestationsEnAttente,
+    prestationsEnCours,
+    clientsActifs,
+    protegesTotal,
     dernieresPrestationsResult,
     nouveauxClientsResult,
   ] = await Promise.all([
-    supabase
-      .from("prestations_commandes")
-      .select("id")
-      .eq("statut", "en_attente")
-      .in("organisation_id", organisationIds),
-    supabase
-      .from("prestations_commandes")
-      .select("id")
-      .in("statut", ["en_cours", "confirme"])
-      .in("organisation_id", organisationIds),
-    supabase
-      .from("organisations")
-      .select("id")
-      .in("id", organisationIds),
-    supabase
-      .from("majeurs")
-      .select("id")
-      .in("organisation_id", organisationIds),
+    chargerToutesLesLignes<{ id: string }>(() =>
+      supabase
+        .from("prestations_commandes")
+        .select("id")
+        .eq("statut", "en_attente")
+        .in("organisation_id", organisationIds),
+    )
+      .then((lignes) => lignes.length)
+      .catch((error: unknown) => {
+        console.error("prestations en attente", error);
+        return 0;
+      }),
+    chargerToutesLesLignes<{ id: string }>(() =>
+      supabase
+        .from("prestations_commandes")
+        .select("id")
+        .in("statut", ["en_cours", "confirme"])
+        .in("organisation_id", organisationIds),
+    )
+      .then((lignes) => lignes.length)
+      .catch((error: unknown) => {
+        console.error("prestations en cours", error);
+        return 0;
+      }),
+    chargerToutesLesLignes<{ id: string }>(() =>
+      supabase.from("organisations").select("id").in("id", organisationIds),
+    )
+      .then((lignes) => lignes.length)
+      .catch((error: unknown) => {
+        console.error("organisations", error);
+        return 0;
+      }),
+    chargerToutesLesLignes<{ id: string }>(() =>
+      supabase
+        .from("majeurs")
+        .select("id")
+        .in("organisation_id", organisationIds),
+    )
+      .then((lignes) => lignes.length)
+      .catch((error: unknown) => {
+        console.error("majeurs", error);
+        return 0;
+      }),
     supabase
       .from("prestations_commandes")
       .select(
@@ -75,16 +93,10 @@ export async function getDashboardData(): Promise<DashboardData> {
 
   return {
     metrics: {
-      prestationsEnAttente: extractCount(
-        prestationsEnAttenteResult,
-        "prestations en attente",
-      ),
-      prestationsEnCours: extractCount(
-        prestationsEnCoursResult,
-        "prestations en cours",
-      ),
-      clientsActifs: extractCount(clientsActifsResult, "organisations"),
-      protegesTotal: extractCount(protegesTotalResult, "majeurs"),
+      prestationsEnAttente,
+      prestationsEnCours,
+      clientsActifs,
+      protegesTotal,
     },
     dernieresPrestations:
       (dernieresPrestationsResult.data as PrestationAvecRelations[] | null) ??

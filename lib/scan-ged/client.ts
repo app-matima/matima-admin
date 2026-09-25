@@ -25,6 +25,30 @@ export async function fetchScanGedContext(
   return data;
 }
 
+export async function fetchDossiersProtege(
+  organisationId: string,
+  majeurId: string,
+): Promise<GedDossier[]> {
+  if (!majeurId) {
+    return [];
+  }
+
+  const response = await fetch(
+    `/api/scan-ged/${organisationId}/dossiers?majeurId=${encodeURIComponent(majeurId)}`,
+  );
+
+  const data = (await response.json()) as {
+    dossiers?: GedDossier[];
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "Impossible de charger les dossiers.");
+  }
+
+  return data.dossiers ?? [];
+}
+
 async function demanderUrlUploadSignee(
   organisationId: string,
   fichier: File,
@@ -110,12 +134,16 @@ async function rollbackStoragePaths(
 }
 
 /**
- * Upload chaque fichier directement vers Storage (URL signée), puis classifie.
- * Erreurs d'upload isolées par fichier ; classification sur les chemins réussis.
+ * Upload chaque fichier vers Storage, enregistre en file d'attente, puis
+ * traite le classement IA par paquets jusqu'à épuisement.
  */
 export async function uploadScanGedDocuments(
   organisationId: string,
   fichiers: File[],
+  options?: {
+    onProgress?: (progress: { fait: number; total: number }) => void;
+    tailleLot?: number;
+  },
 ): Promise<{ documents: DocumentNonClasse[]; erreurs?: string[] }> {
   const storagePaths: string[] = [];
   const erreursUpload: string[] = [];
@@ -147,7 +175,8 @@ export async function uploadScanGedDocuments(
     );
   }
 
-  let classificationReussie = false;
+  let enregistrementReussi = false;
+  const documentsParId = new Map<string, DocumentNonClasse>();
 
   try {
     const response = await fetch(
@@ -167,7 +196,7 @@ export async function uploadScanGedDocuments(
       data = (await response.json()) as typeof data;
     } catch {
       throw new Error(
-        `Classification impossible (HTTP ${response.status}).`,
+        `Enregistrement impossible (HTTP ${response.status}).`,
       );
     }
 
@@ -175,23 +204,124 @@ export async function uploadScanGedDocuments(
       throw new Error(
         "error" in data && data.error
           ? data.error
-          : "Impossible de classifier les documents.",
+          : "Impossible d'enregistrer les documents.",
       );
     }
 
-    classificationReussie = true;
+    enregistrementReussi = true;
 
-    const erreurs = [...erreursUpload, ...(data.erreurs ?? [])];
+    for (const document of data.documents) {
+      documentsParId.set(document.id, document);
+    }
+
+    const erreursPrep = [...erreursUpload, ...(data.erreurs ?? [])];
+    const totalInitial = data.documents.length;
+    let fait = 0;
+
+    options?.onProgress?.({ fait: 0, total: Math.max(totalInitial, 1) });
+
+    let restant = totalInitial;
+    let gardeFou = 0;
+
+    while (restant > 0 && gardeFou < 10_000) {
+      gardeFou += 1;
+      const lot = await traiterLotScanGed(organisationId, {
+        taille: options?.tailleLot,
+      });
+
+      for (const document of lot.documents) {
+        documentsParId.set(document.id, document);
+      }
+
+      fait += lot.traite;
+      restant = lot.restant;
+      const totalAffiche = Math.max(fait + restant, totalInitial);
+      options?.onProgress?.({
+        fait: Math.min(fait, totalAffiche),
+        total: totalAffiche,
+      });
+
+      if (lot.traite === 0) {
+        break;
+      }
+    }
 
     return {
-      documents: data.documents,
-      erreurs: erreurs.length > 0 ? erreurs : undefined,
+      documents: Array.from(documentsParId.values()),
+      erreurs: erreursPrep.length > 0 ? erreursPrep : undefined,
     };
   } finally {
-    if (!classificationReussie) {
+    if (!enregistrementReussi) {
       await rollbackStoragePaths(organisationId, storagePaths);
     }
   }
+}
+
+export async function traiterLotScanGed(
+  organisationId: string,
+  options?: { taille?: number; documentIds?: string[] },
+): Promise<{
+  traite: number;
+  restant: number;
+  details: {
+    documentId: string;
+    nom: string;
+    statut: string;
+    erreur: string | null;
+  }[];
+  documents: DocumentNonClasse[];
+}> {
+  const response = await fetch(
+    `/api/scan-ged/${organisationId}/traiter-lot`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        taille: options?.taille,
+        documentIds: options?.documentIds,
+      }),
+    },
+  );
+
+  const data = (await response.json()) as {
+    traite?: number;
+    restant?: number;
+    details?: {
+      documentId: string;
+      nom: string;
+      statut: string;
+      erreur: string | null;
+    }[];
+    documents?: DocumentNonClasse[];
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "Impossible de traiter le lot.");
+  }
+
+  return {
+    traite: data.traite ?? 0,
+    restant: data.restant ?? 0,
+    details: data.details ?? [],
+    documents: data.documents ?? [],
+  };
+}
+
+export async function reessayerClassementScanGedDocument(params: {
+  organisationId: string;
+  documentId: string;
+}): Promise<DocumentNonClasse> {
+  const lot = await traiterLotScanGed(params.organisationId, {
+    documentIds: [params.documentId],
+  });
+
+  const document = lot.documents.find((item) => item.id === params.documentId);
+  if (!document) {
+    throw new Error("Document introuvable après nouvelle tentative.");
+  }
+
+  return document;
 }
 
 export async function validerScanGedDocument(params: {
@@ -238,6 +368,34 @@ export async function supprimerScanGedDocument(
   if (!response.ok) {
     throw new Error(data.error ?? "Impossible de supprimer le document.");
   }
+}
+
+/**
+ * Après choix manuel d'un protégé : relance l'appel B et met à jour la proposition.
+ */
+export async function proposerDossierScanGedDocument(params: {
+  organisationId: string;
+  documentId: string;
+  majeurId: string;
+}): Promise<DocumentNonClasse> {
+  const response = await fetch(
+    `/api/scan-ged/${params.organisationId}/documents/${params.documentId}/proposer-dossier`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ majeurId: params.majeurId }),
+    },
+  );
+
+  const data = (await response.json()) as DocumentNonClasse & {
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(data.error ?? "Impossible de proposer un dossier.");
+  }
+
+  return data;
 }
 
 export async function validerTousScanGedDocuments(

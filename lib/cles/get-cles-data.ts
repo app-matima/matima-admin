@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { MjpmProfile } from "@/types/clients";
 import type { CleProtege, OrganisationClesGroupe, StatutCle } from "@/types/cles";
@@ -23,6 +24,8 @@ interface UtilisateurRow {
   role: string;
 }
 
+const TAILLE_CHUNK_IN = 200;
+
 async function enrichMjpmProfile(userId: string): Promise<MjpmProfile> {
   const supabase = createAdminClient();
   const { data, error } = await supabase.auth.admin.getUserById(userId);
@@ -44,26 +47,56 @@ async function enrichMjpmProfile(userId: string): Promise<MjpmProfile> {
   };
 }
 
+async function chargerClesParMajeurIds(
+  majeurIds: string[],
+): Promise<CleRow[]> {
+  if (majeurIds.length === 0) {
+    return [];
+  }
+
+  const supabase = createAdminClient();
+  const resultats: CleRow[] = [];
+
+  for (let index = 0; index < majeurIds.length; index += TAILLE_CHUNK_IN) {
+    const chunk = majeurIds.slice(index, index + TAILLE_CHUNK_IN);
+    const page = await chargerToutesLesLignes<CleRow>(() =>
+      supabase
+        .from("cles")
+        .select("id, majeur_id, statut, notes")
+        .in("majeur_id", chunk),
+    );
+    resultats.push(...page);
+  }
+
+  return resultats;
+}
+
 async function ensureClesForMajeurs(majeurIds: string[]): Promise<void> {
   if (majeurIds.length === 0) {
     return;
   }
 
   const supabase = createAdminClient();
+  const existingIds = new Set<string>();
 
-  const { data: existing, error: fetchError } = await supabase
-    .from("cles")
-    .select("majeur_id")
-    .in("majeur_id", majeurIds);
-
-  if (fetchError) {
-    console.error("ensureClesForMajeurs fetch", fetchError);
-    return;
+  for (let index = 0; index < majeurIds.length; index += TAILLE_CHUNK_IN) {
+    const chunk = majeurIds.slice(index, index + TAILLE_CHUNK_IN);
+    try {
+      const existants = await chargerToutesLesLignes<{
+        id: string;
+        majeur_id: string;
+      }>(() =>
+        supabase.from("cles").select("id, majeur_id").in("majeur_id", chunk),
+      );
+      for (const row of existants) {
+        existingIds.add(row.majeur_id);
+      }
+    } catch (error) {
+      console.error("ensureClesForMajeurs fetch", error);
+      return;
+    }
   }
 
-  const existingIds = new Set(
-    (existing ?? []).map((row) => row.majeur_id as string),
-  );
   const missingIds = majeurIds.filter((id) => !existingIds.has(id));
 
   if (missingIds.length === 0) {
@@ -90,25 +123,34 @@ export async function getClesData(): Promise<OrganisationClesGroupe[]> {
     return [];
   }
 
-  const [majeursResult, mjpmResult] = await Promise.all([
-    supabase
-      .from("majeurs")
-      .select("id, organisation_id, nom, prenom")
-      .in("organisation_id", organisationIds)
-      .order("nom", { ascending: true }),
-    supabase
-      .from("utilisateurs")
-      .select("id, organisation_id, role")
-      .in("organisation_id", organisationIds)
-      .eq("role", "mjpm"),
-  ]);
+  let majeurs: MajeurRow[];
+  let mjpmUtilisateurs: UtilisateurRow[];
 
-  if (majeursResult.error) {
-    console.error("getClesData majeurs", majeursResult.error);
+  try {
+    [majeurs, mjpmUtilisateurs] = await Promise.all([
+      chargerToutesLesLignes<MajeurRow>(() =>
+        supabase
+          .from("majeurs")
+          .select("id, organisation_id, nom, prenom")
+          .in("organisation_id", organisationIds),
+      ),
+      chargerToutesLesLignes<UtilisateurRow>(() =>
+        supabase
+          .from("utilisateurs")
+          .select("id, organisation_id, role")
+          .in("organisation_id", organisationIds)
+          .eq("role", "mjpm"),
+      ),
+    ]);
+  } catch (error) {
+    console.error("getClesData", error);
     return [];
   }
 
-  const majeurs = (majeursResult.data ?? []) as MajeurRow[];
+  majeurs = [...majeurs].sort((a, b) =>
+    a.nom.localeCompare(b.nom, "fr", { sensitivity: "base" }),
+  );
+
   const majeurIds = majeurs.map((majeur) => majeur.id);
 
   await ensureClesForMajeurs(majeurIds);
@@ -117,22 +159,19 @@ export async function getClesData(): Promise<OrganisationClesGroupe[]> {
     return [];
   }
 
-  const { data: clesData, error: clesError } = await supabase
-    .from("cles")
-    .select("id, majeur_id, statut, notes")
-    .in("majeur_id", majeurIds);
-
-  if (clesError) {
-    console.error("getClesData cles", clesError);
+  let clesData: CleRow[];
+  try {
+    clesData = await chargerClesParMajeurIds(majeurIds);
+  } catch (error) {
+    console.error("getClesData cles", error);
     return [];
   }
 
   const clesParMajeur = new Map<string, CleRow>();
-  for (const cle of (clesData ?? []) as CleRow[]) {
+  for (const cle of clesData) {
     clesParMajeur.set(cle.majeur_id, cle);
   }
 
-  const mjpmUtilisateurs = (mjpmResult.data ?? []) as UtilisateurRow[];
   const mjpmParOrganisation = new Map<string, UtilisateurRow>();
   for (const utilisateur of mjpmUtilisateurs) {
     if (!mjpmParOrganisation.has(utilisateur.organisation_id)) {

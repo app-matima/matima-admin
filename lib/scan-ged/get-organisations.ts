@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import type { MjpmProfile } from "@/types/clients";
 import type { ScanGedOrganisation } from "@/types/scan-ged";
@@ -43,50 +44,52 @@ export async function getScanGedOrganisations(): Promise<ScanGedOrganisation[]> 
     return [];
   }
 
-  const [organisationsResult, mjpmResult] = await Promise.all([
-    supabase
-      .from("organisations")
-      .select("id, nom")
-      .in("id", organisationIds)
-      .order("nom", {
-        ascending: true,
-      }),
-    supabase
-      .from("utilisateurs")
-      .select("id, organisation_id, role")
-      .eq("role", "mjpm"),
-  ]);
+  try {
+    const [organisations, mjpmUtilisateurs] = await Promise.all([
+      chargerToutesLesLignes<OrganisationRow>(() =>
+        supabase
+          .from("organisations")
+          .select("id, nom")
+          .in("id", organisationIds),
+      ),
+      chargerToutesLesLignes<UtilisateurRow>(() =>
+        supabase
+          .from("utilisateurs")
+          .select("id, organisation_id, role")
+          .eq("role", "mjpm"),
+      ),
+    ]);
 
-  if (organisationsResult.error) {
-    console.error("getScanGedOrganisations", organisationsResult.error);
+    const organisationsTriees = [...organisations].sort((a, b) =>
+      a.nom.localeCompare(b.nom, "fr", { sensitivity: "base" }),
+    );
+
+    const mjpmParOrganisation = new Map<string, UtilisateurRow>();
+    for (const utilisateur of mjpmUtilisateurs) {
+      if (!mjpmParOrganisation.has(utilisateur.organisation_id)) {
+        mjpmParOrganisation.set(utilisateur.organisation_id, utilisateur);
+      }
+    }
+
+    const mjpmProfiles = new Map<string, MjpmProfile>();
+    await Promise.all(
+      Array.from(mjpmParOrganisation.entries()).map(
+        async ([orgId, utilisateur]) => {
+          const profile = await enrichMjpmProfile(utilisateur.id);
+          mjpmProfiles.set(orgId, profile);
+        },
+      ),
+    );
+
+    return organisationsTriees.map((organisation) => ({
+      organisationId: organisation.id,
+      cabinetNom: organisation.nom,
+      mjpm: mjpmProfiles.get(organisation.id) ?? null,
+    }));
+  } catch (error) {
+    console.error("getScanGedOrganisations", error);
     return [];
   }
-
-  const organisations = (organisationsResult.data ?? []) as OrganisationRow[];
-  const mjpmUtilisateurs = (mjpmResult.data ?? []) as UtilisateurRow[];
-
-  const mjpmParOrganisation = new Map<string, UtilisateurRow>();
-  for (const utilisateur of mjpmUtilisateurs) {
-    if (!mjpmParOrganisation.has(utilisateur.organisation_id)) {
-      mjpmParOrganisation.set(utilisateur.organisation_id, utilisateur);
-    }
-  }
-
-  const mjpmProfiles = new Map<string, MjpmProfile>();
-  await Promise.all(
-    Array.from(mjpmParOrganisation.entries()).map(
-      async ([orgId, utilisateur]) => {
-        const profile = await enrichMjpmProfile(utilisateur.id);
-        mjpmProfiles.set(orgId, profile);
-      },
-    ),
-  );
-
-  return organisations.map((organisation) => ({
-    organisationId: organisation.id,
-    cabinetNom: organisation.nom,
-    mjpm: mjpmProfiles.get(organisation.id) ?? null,
-  }));
 }
 
 export async function getScanGedOrganisationContext(
@@ -103,41 +106,46 @@ export async function getScanGedOrganisationContext(
     };
   }
 
-  const [dossiersResult, majeursResult, documentsResult] = await Promise.all([
-    supabase
-      .from("ged_dossiers")
-      .select("id, organisation_id, majeur_id, parent_id, nom, cree_par_ia, created_at")
-      .eq("organisation_id", organisationId)
-      .order("nom", { ascending: true }),
-    supabase
-      .from("majeurs")
-      .select("id, nom, prenom")
-      .eq("organisation_id", organisationId)
-      .eq("statut", "actif")
-      .order("nom", { ascending: true }),
-    supabase
-      .from("documents")
-      .select("*")
-      .eq("organisation_id", organisationId)
-      .is("majeur_id", null)
-      .order("created_at", { ascending: false }),
-  ]);
+  try {
+    const [majeurs, documents] = await Promise.all([
+      chargerToutesLesLignes<{ id: string; nom: string; prenom: string }>(() =>
+        supabase
+          .from("majeurs")
+          .select("id, nom, prenom")
+          .eq("organisation_id", organisationId)
+          .eq("statut", "actif"),
+      ),
+      chargerToutesLesLignes<Record<string, unknown>>(() =>
+        supabase
+          .from("documents")
+          .select("*")
+          .eq("organisation_id", organisationId)
+          .is("majeur_id", null),
+      ),
+    ]);
 
-  if (dossiersResult.error) {
-    console.error("getScanGedOrganisationContext dossiers", dossiersResult.error);
+    const majeursTries = [...majeurs].sort((a, b) =>
+      a.nom.localeCompare(b.nom, "fr", { sensitivity: "base" }),
+    );
+
+    const documentsTries = [...documents].sort((a, b) => {
+      const dateA = String(a.created_at ?? "");
+      const dateB = String(b.created_at ?? "");
+      return dateB.localeCompare(dateA);
+    });
+
+    return {
+      // Les dossiers GED sont chargés à la demande par protégé (évite la troncature à 1 000).
+      dossiers: [],
+      majeurs: majeursTries,
+      documents: documentsTries,
+    };
+  } catch (error) {
+    console.error("getScanGedOrganisationContext", error);
+    return {
+      dossiers: [],
+      majeurs: [],
+      documents: [],
+    };
   }
-
-  if (majeursResult.error) {
-    console.error("getScanGedOrganisationContext majeurs", majeursResult.error);
-  }
-
-  if (documentsResult.error) {
-    console.error("getScanGedOrganisationContext documents", documentsResult.error);
-  }
-
-  return {
-    dossiers: dossiersResult.data ?? [],
-    majeurs: majeursResult.data ?? [],
-    documents: documentsResult.data ?? [],
-  };
 }

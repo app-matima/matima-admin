@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 
 const DOSSIER_PRESTATIONS_NOM = "Prestations";
 
@@ -13,18 +14,17 @@ export async function getOrCreateDossierPrestationsGed(
     majeurId: string;
   },
 ): Promise<string> {
-  const { data: existants, error: lectureError } = await supabase
-    .from("ged_dossiers")
-    .select("id, nom")
-    .eq("organisation_id", params.organisationId)
-    .eq("majeur_id", params.majeurId)
-    .is("parent_id", null);
+  const existants = await chargerToutesLesLignes<{ id: string; nom: string }>(
+    () =>
+      supabase
+        .from("ged_dossiers")
+        .select("id, nom")
+        .eq("organisation_id", params.organisationId)
+        .eq("majeur_id", params.majeurId)
+        .is("parent_id", null),
+  );
 
-  if (lectureError) {
-    throw new Error(lectureError.message);
-  }
-
-  const dejaPresent = (existants ?? []).find(
+  const dejaPresent = existants.find(
     (dossier) =>
       dossier.nom.toLowerCase() === DOSSIER_PRESTATIONS_NOM.toLowerCase(),
   );

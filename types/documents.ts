@@ -16,6 +16,11 @@ export interface GedDossier {
   created_at?: string;
 }
 
+export type StatutClassementDocument =
+  | "en_attente_classement"
+  | "classe"
+  | "echec_classement";
+
 export interface Document {
   id: string;
   organisation_id: string;
@@ -37,6 +42,8 @@ export interface Document {
     nom: string;
   } | null;
   proposition_nom?: string | null;
+  statut_classement?: StatutClassementDocument | null;
+  erreur_classement?: string | null;
   created_at?: string;
 }
 
@@ -56,6 +63,8 @@ export interface DocumentNonClasse extends Document {
     nom: string;
   } | null;
   proposition_nom?: string | null;
+  statut_classement?: StatutClassementDocument | null;
+  erreur_classement?: string | null;
 }
 
 export interface MajeurActif {

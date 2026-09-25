@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test lib/documents/split-pdf-blank-pages.test.ts"
+    "test": "tsx --test lib/documents/split-pdf-blank-pages.test.ts lib/claude/proposer-document-non-classe.test.ts lib/documents/scan-ged-file-attente.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.0",

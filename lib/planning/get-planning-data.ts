@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/server";
+import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import {
   addDays,
   dateStringToKey,
@@ -29,31 +30,36 @@ const PRESTATION_PLANNING_SELECT =
 export async function getPlanningData(): Promise<PlanningData> {
   const supabase = createAdminClient();
 
-  const [prestationsResult, congesResult] = await Promise.all([
-    supabase
-      .from("prestations_commandes")
-      .select(PRESTATION_PLANNING_SELECT)
-      .in("statut", ["en_attente", "confirme", "en_cours", "realise"])
-      .not("date_souhaitee", "is", null)
-      .order("date_souhaitee", { ascending: true }),
-    supabase
-      .from("conges")
-      .select("id, admin_user_id, titre, date_debut, date_fin, notes")
-      .order("date_debut", { ascending: true }),
-  ]);
+  try {
+    const [prestations, conges] = await Promise.all([
+      chargerToutesLesLignes<PlanningPrestation>(() =>
+        supabase
+          .from("prestations_commandes")
+          .select(PRESTATION_PLANNING_SELECT)
+          .in("statut", ["en_attente", "confirme", "en_cours", "realise"])
+          .not("date_souhaitee", "is", null),
+      ),
+      chargerToutesLesLignes<Conge>(() =>
+        supabase
+          .from("conges")
+          .select("id, admin_user_id, titre, date_debut, date_fin, notes"),
+      ),
+    ]);
 
-  if (prestationsResult.error) {
-    console.error("getPlanningData prestations", prestationsResult.error);
+    return {
+      prestations: [...prestations].sort((a, b) =>
+        String(a.date_souhaitee ?? "").localeCompare(
+          String(b.date_souhaitee ?? ""),
+        ),
+      ),
+      conges: [...conges].sort((a, b) =>
+        String(a.date_debut ?? "").localeCompare(String(b.date_debut ?? "")),
+      ),
+    };
+  } catch (error) {
+    console.error("getPlanningData", error);
+    return { prestations: [], conges: [] };
   }
-
-  if (congesResult.error) {
-    console.error("getPlanningData conges", congesResult.error);
-  }
-
-  return {
-    prestations: (prestationsResult.data ?? []) as PlanningPrestation[],
-    conges: (congesResult.data ?? []) as Conge[],
-  };
 }
 
 /**
@@ -79,46 +85,58 @@ export async function getMobilePlanningWeekData(
 
   const supabase = createAdminClient();
 
-  const [prestationsResult, tachesResult] = await Promise.all([
-    supabase
-      .from("prestations_commandes")
-      .select(PRESTATION_PLANNING_SELECT)
-      .in("statut", ["en_attente", "confirme", "en_cours", "realise"])
-      .not("date_souhaitee", "is", null)
-      .gte("date_souhaitee", weekStartKey)
-      .lte("date_souhaitee", weekEndKey)
-      .order("date_souhaitee", { ascending: true }),
-    supabase
-      .from("taches_admin")
-      .select("id, admin_user_id, titre, date, notes, created_at")
-      .gte("date", weekStartKey)
-      .lte("date", weekEndKey)
-      .order("date", { ascending: true })
-      .order("created_at", { ascending: true }),
-  ]);
+  try {
+    const [prestationsBrutes, taches] = await Promise.all([
+      chargerToutesLesLignes<PlanningPrestation>(() =>
+        supabase
+          .from("prestations_commandes")
+          .select(PRESTATION_PLANNING_SELECT)
+          .in("statut", ["en_attente", "confirme", "en_cours", "realise"])
+          .not("date_souhaitee", "is", null)
+          .gte("date_souhaitee", weekStartKey)
+          .lte("date_souhaitee", weekEndKey),
+      ),
+      chargerToutesLesLignes<TacheAdmin>(() =>
+        supabase
+          .from("taches_admin")
+          .select("id, admin_user_id, titre, date, notes, created_at")
+          .gte("date", weekStartKey)
+          .lte("date", weekEndKey),
+      ),
+    ]);
 
-  if (prestationsResult.error) {
-    console.error(
-      "getMobilePlanningWeekData prestations",
-      prestationsResult.error,
-    );
+    const prestations = prestationsBrutes
+      .filter((prestation) => {
+        const key = dateStringToKey(prestation.date_souhaitee);
+        return key >= weekStartKey && key <= weekEndKey;
+      })
+      .sort((a, b) =>
+        String(a.date_souhaitee ?? "").localeCompare(
+          String(b.date_souhaitee ?? ""),
+        ),
+      );
+
+    const tachesTriees = [...taches].sort((a, b) => {
+      const byDate = String(a.date ?? "").localeCompare(String(b.date ?? ""));
+      if (byDate !== 0) {
+        return byDate;
+      }
+      return String(a.created_at ?? "").localeCompare(String(b.created_at ?? ""));
+    });
+
+    return {
+      weekStartKey,
+      weekEndKey,
+      prestations,
+      taches: tachesTriees,
+    };
+  } catch (error) {
+    console.error("getMobilePlanningWeekData", error);
+    return {
+      weekStartKey,
+      weekEndKey,
+      prestations: [],
+      taches: [],
+    };
   }
-
-  if (tachesResult.error) {
-    console.error("getMobilePlanningWeekData taches", tachesResult.error);
-  }
-
-  const prestations = ((prestationsResult.data ?? []) as PlanningPrestation[]).filter(
-    (prestation) => {
-      const key = dateStringToKey(prestation.date_souhaitee);
-      return key >= weekStartKey && key <= weekEndKey;
-    },
-  );
-
-  return {
-    weekStartKey,
-    weekEndKey,
-    prestations,
-    taches: (tachesResult.data ?? []) as TacheAdmin[],
-  };
 }

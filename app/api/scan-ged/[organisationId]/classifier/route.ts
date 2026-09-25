@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { classerDocumentsInboxDepuisStoragePaths } from "@/lib/documents/non-classes-server";
+import { enregistrerDocumentsInboxDepuisStoragePaths } from "@/lib/documents/non-classes-server";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
-import { createAdminClient } from "@/lib/supabase/server";
 import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 
 export const runtime = "nodejs";
@@ -13,7 +12,8 @@ interface ClassifierBody {
 
 /**
  * POST /api/scan-ged/[organisationId]/classifier
- * Classifie des fichiers déjà présents en inbox Storage (payload JSON léger).
+ * Découpe (blanc/rouge) + enregistrement en file « en_attente_classement ».
+ * Ne lance PAS le classement IA (voir /traiter-lot).
  */
 export async function POST(
   request: Request,
@@ -61,45 +61,15 @@ export async function POST(
     );
   }
 
-  const supabase = createAdminClient();
-  const [dossiersResult, majeursResult] = await Promise.all([
-    supabase
-      .from("ged_dossiers")
-      .select("id, nom, majeur_id, parent_id")
-      .eq("organisation_id", organisationId)
-      .order("nom", { ascending: true }),
-    supabase
-      .from("majeurs")
-      .select("id, nom, prenom")
-      .eq("organisation_id", organisationId)
-      .eq("statut", "actif")
-      .order("nom", { ascending: true }),
-  ]);
-
-  if (dossiersResult.error) {
-    return NextResponse.json(
-      { error: dossiersResult.error.message },
-      { status: 500 },
-    );
-  }
-
-  if (majeursResult.error) {
-    return NextResponse.json(
-      { error: majeursResult.error.message },
-      { status: 500 },
-    );
-  }
-
-  const { documents, erreurs } = await classerDocumentsInboxDepuisStoragePaths({
-    storagePaths,
-    organisationId,
-    dossiers: dossiersResult.data ?? [],
-    majeurs: majeursResult.data ?? [],
-  });
+  const { documents, erreurs } =
+    await enregistrerDocumentsInboxDepuisStoragePaths({
+      storagePaths,
+      organisationId,
+    });
 
   if (documents.length === 0) {
     return NextResponse.json(
-      { error: erreurs.join(" ") || "Classification impossible." },
+      { error: erreurs.join(" ") || "Enregistrement impossible." },
       { status: 400 },
     );
   }
