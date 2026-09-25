@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import {
   formatCheminDossier,
   formatSegmentsCheminBreadcrumb,
@@ -34,6 +34,15 @@ interface PanelPosition {
   width: number;
 }
 
+interface OptionSpeciale {
+  id: string;
+  label: string;
+}
+
+function estRacine(dossier: GedDossier): boolean {
+  return dossier.parent_id == null || dossier.parent_id === "";
+}
+
 export function GedDossierSelect({
   id,
   label,
@@ -47,6 +56,8 @@ export function GedDossierSelect({
 }: GedDossierSelectProps) {
   const [recherche, setRecherche] = useState("");
   const [ouvert, setOuvert] = useState(false);
+  /** Pile des parents visités (vide = racine). */
+  const [pileParents, setPileParents] = useState<string[]>([]);
   const [panelPosition, setPanelPosition] = useState<PanelPosition | null>(
     null,
   );
@@ -59,52 +70,129 @@ export function GedDossierSelect({
       ? nouveauCheminManuel
       : [""];
 
-  const options = useMemo(() => {
-    const liste = dossiers.map((dossier) => ({
-      id: dossier.id,
-      label: formatCheminDossier(dossier.id, dossiers),
-    }));
+  const dossiersParParent = useMemo(() => {
+    const map = new Map<string | null, GedDossier[]>();
 
+    for (const dossier of dossiers) {
+      const parentCle = estRacine(dossier) ? null : dossier.parent_id!;
+      const liste = map.get(parentCle) ?? [];
+      liste.push(dossier);
+      map.set(parentCle, liste);
+    }
+
+    for (const liste of map.values()) {
+      liste.sort((a, b) =>
+        a.nom.localeCompare(b.nom, "fr", { sensitivity: "base" }),
+      );
+    }
+
+    return map;
+  }, [dossiers]);
+
+  const enfantsDe = (parentId: string | null): GedDossier[] =>
+    dossiersParParent.get(parentId) ?? [];
+
+  const aDesEnfants = (dossierId: string): boolean =>
+    (dossiersParParent.get(dossierId)?.length ?? 0) > 0;
+
+  const parentCourant =
+    pileParents.length > 0 ? (pileParents[pileParents.length - 1] ?? null) : null;
+
+  const dossiersDuNiveau = enfantsDe(parentCourant);
+
+  const filAriane = useMemo(() => {
+    return pileParents
+      .map((dossierId) => {
+        const dossier = dossiers.find((item) => item.id === dossierId);
+        return dossier
+          ? { id: dossier.id, nom: dossier.nom }
+          : { id: dossierId, nom: "…" };
+      })
+      .filter(Boolean);
+  }, [pileParents, dossiers]);
+
+  const optionNouveauIa: OptionSpeciale | null = useMemo(() => {
     const segments =
       propositionNouveauCheminDossier
         ?.map((segment) => segment.trim())
         .filter(Boolean) ?? [];
 
-    const optionNouveauIa =
-      segments.length > 0
-        ? [
-            {
-              id: NOUVEAU_DOSSIER_SELECTION,
-              label: libelleNouveauCheminDossierPropose(segments),
-            },
-          ]
-        : [];
-
-    const optionNouveauManuel = {
-      id: NOUVEAU_DOSSIER_MANUEL,
-      label: "Créer un nouveau dossier...",
-    };
+    if (segments.length === 0) {
+      return null;
+    }
 
     return {
-      optionNouveauManuel,
-      autresOptions: [...optionNouveauIa, ...liste],
+      id: NOUVEAU_DOSSIER_SELECTION,
+      label: libelleNouveauCheminDossierPropose(segments),
     };
-  }, [dossiers, propositionNouveauCheminDossier]);
+  }, [propositionNouveauCheminDossier]);
+
+  const optionNouveauManuel: OptionSpeciale = {
+    id: NOUVEAU_DOSSIER_MANUEL,
+    label: "Créer un nouveau dossier...",
+  };
 
   const terme = recherche.trim().toLowerCase();
-  const optionsFiltrees =
-    terme.length > 0
-      ? options.autresOptions.filter((option) =>
-          option.label.toLowerCase().includes(terme),
-        )
-      : options.autresOptions;
+  const enModeRecherche = terme.length > 0;
+
+  const resultatsRecherche = useMemo(() => {
+    if (!enModeRecherche) {
+      return [];
+    }
+
+    return dossiers
+      .map((dossier) => ({
+        id: dossier.id,
+        label: formatCheminDossier(dossier.id, dossiers),
+      }))
+      .filter((option) => option.label.toLowerCase().includes(terme))
+      .sort((a, b) =>
+        a.label.localeCompare(b.label, "fr", { sensitivity: "base" }),
+      );
+  }, [dossiers, enModeRecherche, terme]);
 
   const libelleCheminManuel = formatSegmentsCheminBreadcrumb(segmentsManuel);
-  const libelleSelectionne =
-    value === NOUVEAU_DOSSIER_MANUEL
-      ? libelleCheminManuel || "Nouveau dossier"
-      : options.autresOptions.find((option) => option.id === value)?.label ??
-        "Sélectionner un dossier…";
+  const libelleSelectionne = (() => {
+    if (value === NOUVEAU_DOSSIER_MANUEL) {
+      return libelleCheminManuel || "Nouveau dossier";
+    }
+    if (value === NOUVEAU_DOSSIER_SELECTION && optionNouveauIa) {
+      return optionNouveauIa.label;
+    }
+    if (value) {
+      const chemin = formatCheminDossier(value, dossiers);
+      return chemin || "Sélectionner un dossier…";
+    }
+    return "Sélectionner un dossier…";
+  })();
+
+  function fermerPanel() {
+    setOuvert(false);
+    setRecherche("");
+    setPileParents([]);
+  }
+
+  function selectionner(dossierId: string) {
+    onChange(dossierId);
+    fermerPanel();
+  }
+
+  function naviguerVers(dossierId: string) {
+    setPileParents((courante) => [...courante, dossierId]);
+  }
+
+  function remonter() {
+    setPileParents((courante) => courante.slice(0, -1));
+  }
+
+  function allerAuNiveau(index: number) {
+    // index -1 = racine ; sinon coupe la pile après index
+    if (index < 0) {
+      setPileParents([]);
+      return;
+    }
+    setPileParents((courante) => courante.slice(0, index + 1));
+  }
 
   function mettreAJourPositionPanel() {
     const trigger = triggerRef.current;
@@ -146,7 +234,13 @@ export function GedDossierSelect({
     }
 
     mettreAJourPositionPanel();
-  }, [ouvert, recherche, optionsFiltrees.length]);
+  }, [
+    ouvert,
+    recherche,
+    pileParents.length,
+    dossiersDuNiveau.length,
+    resultatsRecherche.length,
+  ]);
 
   useEffect(() => {
     setMonte(true);
@@ -172,14 +266,12 @@ export function GedDossierSelect({
         return;
       }
 
-      setOuvert(false);
-      setRecherche("");
+      fermerPanel();
     }
 
     function handleEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setOuvert(false);
-        setRecherche("");
+        fermerPanel();
       }
     }
 
@@ -219,19 +311,61 @@ export function GedDossierSelect({
             className="w-full rounded-lg border border-border bg-page px-3 py-1.5 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30"
           />
         </div>
-        <ul className="max-h-48 overflow-y-auto">
+
+        {!enModeRecherche && pileParents.length > 0 && (
+          <div className="flex items-center gap-1 border-b border-border bg-page/60 px-2 py-1.5">
+            <button
+              type="button"
+              onClick={remonter}
+              className="inline-flex shrink-0 items-center gap-0.5 rounded-md px-1.5 py-1 text-xs font-medium text-accent transition-colors hover:bg-[#E6F7F5]"
+              aria-label="Retour au niveau précédent"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+              Retour
+            </button>
+            <nav
+              className="min-w-0 flex-1 truncate text-xs text-text-muted"
+              aria-label="Fil d'Ariane"
+            >
+              <button
+                type="button"
+                onClick={() => allerAuNiveau(-1)}
+                className="hover:text-accent hover:underline"
+              >
+                Racine
+              </button>
+              {filAriane.map((segment, index) => (
+                <span key={segment.id}>
+                  <span className="mx-1 text-border">/</span>
+                  <button
+                    type="button"
+                    onClick={() => allerAuNiveau(index)}
+                    className={cn(
+                      "hover:text-accent hover:underline",
+                      index === filAriane.length - 1 &&
+                        "font-medium text-text-strong",
+                    )}
+                  >
+                    {segment.nom}
+                  </button>
+                </span>
+              ))}
+            </nav>
+          </div>
+        )}
+
+        <ul className="max-h-56 overflow-y-auto">
           <li>
             <button
               type="button"
               onClick={() => {
-                onChange(options.optionNouveauManuel.id);
+                onChange(optionNouveauManuel.id);
                 onNouveauCheminManuelChange?.(
                   nouveauCheminManuel && nouveauCheminManuel.length > 0
                     ? nouveauCheminManuel
                     : [""],
                 );
-                setOuvert(false);
-                setRecherche("");
+                fermerPanel();
               }}
               className={cn(
                 "flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium transition-colors",
@@ -241,35 +375,113 @@ export function GedDossierSelect({
               )}
             >
               <Plus className="h-3.5 w-3.5 shrink-0" aria-hidden />
-              {options.optionNouveauManuel.label}
+              {optionNouveauManuel.label}
             </button>
           </li>
+
+          {optionNouveauIa && (
+            <li>
+              <button
+                type="button"
+                onClick={() => selectionner(optionNouveauIa.id)}
+                className={cn(
+                  "w-full px-3 py-2 text-left text-sm transition-colors",
+                  value === optionNouveauIa.id
+                    ? "bg-accent/10 text-accent"
+                    : "text-text-strong hover:bg-page",
+                )}
+              >
+                {optionNouveauIa.label}
+              </button>
+            </li>
+          )}
+
           <li className="border-b border-border" aria-hidden />
-          {optionsFiltrees.length === 0 ? (
+
+          {enModeRecherche ? (
+            resultatsRecherche.length === 0 ? (
+              <li className="px-3 py-2 text-xs text-text-muted">
+                Aucun dossier trouvé
+              </li>
+            ) : (
+              resultatsRecherche.map((option) => (
+                <li key={option.id}>
+                  <button
+                    type="button"
+                    onClick={() => selectionner(option.id)}
+                    className={cn(
+                      "w-full px-3 py-2 text-left text-sm transition-colors",
+                      value === option.id
+                        ? "bg-accent/10 text-accent"
+                        : "text-text-strong hover:bg-page",
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                </li>
+              ))
+            )
+          ) : dossiersDuNiveau.length === 0 ? (
             <li className="px-3 py-2 text-xs text-text-muted">
-              Aucun dossier trouvé
+              {parentCourant
+                ? "Aucun sous-dossier"
+                : "Aucun dossier pour ce protégé"}
             </li>
           ) : (
-            optionsFiltrees.map((option) => (
-              <li key={option.id || "vide"}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(option.id);
-                    setOuvert(false);
-                    setRecherche("");
-                  }}
+            dossiersDuNiveau.map((dossier) => {
+              const avecEnfants = aDesEnfants(dossier.id);
+              const estSelectionne = value === dossier.id;
+
+              if (!avecEnfants) {
+                return (
+                  <li key={dossier.id}>
+                    <button
+                      type="button"
+                      onClick={() => selectionner(dossier.id)}
+                      className={cn(
+                        "w-full px-3 py-2 text-left text-sm transition-colors",
+                        estSelectionne
+                          ? "bg-accent/10 text-accent"
+                          : "text-text-strong hover:bg-page",
+                      )}
+                    >
+                      {dossier.nom}
+                    </button>
+                  </li>
+                );
+              }
+
+              return (
+                <li
+                  key={dossier.id}
                   className={cn(
-                    "w-full px-3 py-2 text-left text-sm transition-colors",
-                    value === option.id
-                      ? "bg-accent/10 text-accent"
-                      : "text-text-strong hover:bg-page",
+                    "flex items-stretch border-b border-border/60 last:border-b-0",
+                    estSelectionne && "bg-accent/10",
                   )}
                 >
-                  {option.label}
-                </button>
-              </li>
-            ))
+                  <button
+                    type="button"
+                    onClick={() => selectionner(dossier.id)}
+                    title="Sélectionner ce dossier"
+                    className={cn(
+                      "min-w-0 flex-1 px-3 py-2 text-left text-sm transition-colors hover:bg-page",
+                      estSelectionne ? "text-accent" : "text-text-strong",
+                    )}
+                  >
+                    {dossier.nom}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => naviguerVers(dossier.id)}
+                    title="Voir les sous-dossiers"
+                    aria-label={`Ouvrir ${dossier.nom}`}
+                    className="flex shrink-0 items-center gap-0.5 border-l border-border px-2.5 text-text-muted transition-colors hover:bg-page hover:text-accent"
+                  >
+                    <ChevronRight className="h-4 w-4" aria-hidden />
+                  </button>
+                </li>
+              );
+            })
           )}
         </ul>
       </div>
@@ -289,7 +501,15 @@ export function GedDossierSelect({
           type="button"
           id={id}
           disabled={disabled}
-          onClick={() => setOuvert((prev) => !prev)}
+          onClick={() => {
+            if (ouvert) {
+              fermerPanel();
+            } else {
+              setPileParents([]);
+              setRecherche("");
+              setOuvert(true);
+            }
+          }}
           className={cn(
             "w-full rounded-lg border border-border bg-page px-3 py-2 text-left text-sm transition-colors",
             disabled
