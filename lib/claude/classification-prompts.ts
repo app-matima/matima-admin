@@ -76,6 +76,9 @@ Ordre de décision :
 2. Les noms varient d'un cabinet à l'autre : « Banque », « Banques », « Comptes bancaires » désignent la même famille ; « Assurance » et « Assurances » aussi ; « Santé » et « Médical » aussi ; « Impôts » et « Fiscalité » aussi. Un dossier existant au singulier ou au pluriel, ou à une formulation très proche (casse, accents, espaces), EST ce dossier : réutilise son dossier_id. Ne propose JAMAIS un nouveau chemin qui reformule légèrement un dossier existant.
 3. Si aucun dossier existant ne correspond à la famille, propose nouveau_chemin_dossier avec les noms standards ci-dessous.
 4. Ne force jamais un document dans un dossier d'une AUTRE famille sous prétexte qu'il existe. Créer un nouveau dossier est toujours préférable à un mauvais classement.
+5. SOUS-DOSSIER MANQUANT. Si un dossier existant correspond à l'organisme ou à l'émetteur du document (par exemple « Ehpad », « Crédit Agricole », « EDF ») mais ne contient PAS de sous-dossier pour le type précis du document, ne range pas le document directement dans ce dossier parent et ne le range pas dans un dossier voisin. Propose nouveau_chemin_dossier avec le chemin COMPLET du dossier existant, recopié à l'identique depuis la racine, suivi du nouveau sous-dossier. Types de sous-dossier reconnus : Factures, Courriers, Contrats, Attestations, Justificatifs, et Relevés de compte (banque uniquement, voir la règle sur le mot « Relevé »). Ne crée un sous-dossier que si le type du document est clair ; sinon, range dans le dossier existant avec une confiance « basse ».
+
+Ces noms standards ne s'appliquent que si AUCUN dossier existant ne correspond à l'organisme ou à la famille du document. Dès qu'un dossier existant correspond, son nom prime sur le nom standard : ne crée jamais un dossier racine parallèle qui double un dossier existant.
 
 Noms standards pour une création (remplace les crochets par la valeur réelle) :
 - Identité > [Carte d'identité | Passeport | Titre de séjour | État civil]
@@ -130,6 +133,8 @@ E. Relevé annuel d'un contrat d'assurance-vie Predica. Famille : PLACEMENTS ET 
 F. Lettre sur papier à en-tête d'un cabinet de mandataire, transmettant une facture EDF concernant M. DUPONT. Émetteur retenu : EDF. Famille : FACTURES ET ABONNEMENTS.
 
 G. Jugement de renouvellement d'une curatelle renforcée, mentionnant en tête le nom du curateur. Famille : JUSTICE ET MESURE DE PROTECTION. Dossier : « Justice > Jugements ».
+
+H. Facture d'un EHPAD pour un protégé dont l'arborescence contient « Ehpad » à la racine, sans sous-dossier « Factures ». Famille : LOGEMENT ET HÉBERGEMENT. nouveau_chemin_dossier : ["Ehpad", "Factures"]. Jamais un nouveau dossier racine « Hébergement », jamais un rangement à la racine d'« Ehpad » ni dans un dossier voisin.
 
 # FORMAT DE RÉPONSE
 

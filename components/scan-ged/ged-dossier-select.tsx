@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
 import {
+  extraireSegmentsCheminDossier,
   formatCheminDossier,
   formatSegmentsCheminBreadcrumb,
 } from "@/lib/documents/ged-dossier-utils";
@@ -360,11 +361,28 @@ export function GedDossierSelect({
               type="button"
               onClick={() => {
                 onChange(optionNouveauManuel.id);
-                onNouveauCheminManuelChange?.(
-                  nouveauCheminManuel && nouveauCheminManuel.length > 0
-                    ? nouveauCheminManuel
-                    : [""],
-                );
+
+                let segmentsInitiaux: string[];
+                if (nouveauCheminManuel && nouveauCheminManuel.length > 0) {
+                  segmentsInitiaux = nouveauCheminManuel;
+                } else if (
+                  value &&
+                  value !== NOUVEAU_DOSSIER_MANUEL &&
+                  value !== NOUVEAU_DOSSIER_SELECTION
+                ) {
+                  const cheminExistant = extraireSegmentsCheminDossier(
+                    value,
+                    dossiers,
+                  );
+                  segmentsInitiaux =
+                    cheminExistant.length > 0
+                      ? [...cheminExistant, ""]
+                      : [""];
+                } else {
+                  segmentsInitiaux = [""];
+                }
+
+                onNouveauCheminManuelChange?.(segmentsInitiaux);
                 fermerPanel();
               }}
               className={cn(
