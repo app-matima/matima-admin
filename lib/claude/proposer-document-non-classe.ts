@@ -117,8 +117,50 @@ interface AnthropicUsage {
 }
 
 interface AnthropicMessagesResponse {
-  content: { type: string; text: string }[];
+  content: { type: string; text?: string }[];
   usage?: AnthropicUsage;
+  stop_reason?: string | null;
+}
+
+export const MESSAGE_DOSSIER_A_CHOISIR =
+  "Dossier non proposé automatiquement, choisissez-le";
+
+export const MESSAGE_DOSSIER_REFUS =
+  "Dossier à choisir manuellement";
+
+/** Échec de l'appel B après identification réussie du protégé. */
+export class ErreurChoixDossier extends Error {
+  readonly majeurId: string;
+  readonly raison: "refusal" | "vide" | "invalide" | "autre";
+
+  constructor(
+    message: string,
+    majeurId: string,
+    raison: "refusal" | "vide" | "invalide" | "autre" = "autre",
+  ) {
+    super(message);
+    this.name = "ErreurChoixDossier";
+    this.majeurId = majeurId;
+    this.raison = raison;
+  }
+}
+
+function extraireTexteBlocs(
+  content: { type: string; text?: string }[] | undefined,
+): string {
+  if (!content || content.length === 0) {
+    return "";
+  }
+
+  return content
+    .filter(
+      (bloc): bloc is { type: "text"; text: string } =>
+        bloc.type === "text" && typeof bloc.text === "string",
+    )
+    .map((bloc) => bloc.text.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 function normaliserTexte(valeur: string): string {
@@ -306,7 +348,11 @@ async function appelerAnthropic(params: {
     | { type: "text"; text: string; cache_control?: { type: "ephemeral" } }[];
   messages: { role: "user"; content: MessageContent[] }[];
   label: string;
-}): Promise<{ texte: string; tokens: TokensUsage }> {
+}): Promise<{
+  texte: string;
+  tokens: TokensUsage;
+  stopReason: string | null;
+}> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
   if (!apiKey) {
@@ -346,14 +392,26 @@ async function appelerAnthropic(params: {
   }
 
   const result = (await response.json()) as AnthropicMessagesResponse;
-  const texte =
-    result.content.find((bloc) => bloc.type === "text")?.text?.trim() ?? "";
+  const texte = extraireTexteBlocs(result.content);
+  const stopReason = result.stop_reason ?? null;
 
   if (!texte) {
-    throw new Error(`${params.label}: réponse API vide.`);
+    console.error(
+      "réponse sans texte exploitable",
+      params.label,
+      {
+        stop_reason: stopReason,
+        types_blocs: (result.content ?? []).map((bloc) => bloc.type),
+        usage: result.usage ?? null,
+      },
+    );
   }
 
-  return { texte, tokens: extraireTokens(result.usage) };
+  return {
+    texte,
+    tokens: extraireTokens(result.usage),
+    stopReason,
+  };
 }
 
 function construirePromptIdentification(
@@ -451,6 +509,10 @@ export async function identifierProtege(params: {
     ],
   });
 
+  if (!reponse.texte) {
+    throw new Error("identifierProtege: réponse API vide.");
+  }
+
   const json = parserReponseJson<ReponseIdentificationJson>(reponse.texte);
   if (!json) {
     throw new Error("Réponse d'identification du protégé invalide.");
@@ -471,7 +533,7 @@ export async function identifierProtege(params: {
 
 /**
  * Appel B — choix du dossier (document complet, consignes en system cache).
- * Lève une erreur en cas d'échec API / réponse invalide.
+ * Lève ErreurChoixDossier (soft) ou Error en cas d'échec API / réponse inutilisable.
  */
 export async function choisirDossierPourProtege(
   params: ChoisirDossierParams,
@@ -488,7 +550,11 @@ export async function choisirDossierPourProtege(
   });
 
   if (media.length === 0) {
-    throw new Error("Document illisible pour le choix du dossier.");
+    throw new ErreurChoixDossier(
+      MESSAGE_DOSSIER_A_CHOISIR,
+      params.majeur.id,
+      "autre",
+    );
   }
 
   const texteVariable = construireTexteVariableDossier({
@@ -498,28 +564,59 @@ export async function choisirDossierPourProtege(
     typeDocument: params.typeDocument,
   });
 
-  const reponse = await appelerAnthropic({
+  const corpsAppel = {
     model: modeleClassificationDossier(),
-    maxTokens: 800,
-    label: "choisirDossierPourProtege",
+    label: "choisirDossierPourProtege" as const,
     system: [
       {
-        type: "text",
+        type: "text" as const,
         text: CONSIGNES_FIXES_APPEL_B,
-        cache_control: { type: "ephemeral" },
+        cache_control: { type: "ephemeral" as const },
       },
     ],
     messages: [
       {
-        role: "user",
-        content: [...media, { type: "text", text: texteVariable }],
+        role: "user" as const,
+        content: [...media, { type: "text" as const, text: texteVariable }],
       },
     ],
+  };
+
+  let reponse = await appelerAnthropic({
+    ...corpsAppel,
+    maxTokens: 2000,
   });
+
+  if (!reponse.texte && reponse.stopReason === "max_tokens") {
+    reponse = await appelerAnthropic({
+      ...corpsAppel,
+      maxTokens: 4000,
+    });
+  }
+
+  if (reponse.stopReason === "refusal") {
+    throw new ErreurChoixDossier(
+      MESSAGE_DOSSIER_REFUS,
+      params.majeur.id,
+      "refusal",
+    );
+  }
+
+  if (!reponse.texte) {
+    throw new ErreurChoixDossier(
+      MESSAGE_DOSSIER_A_CHOISIR,
+      params.majeur.id,
+      "vide",
+    );
+  }
 
   const json = parserReponseJson<ReponseDossierJson>(reponse.texte);
   if (!json) {
-    throw new Error("Réponse de choix de dossier invalide.");
+    throw new ErreurChoixDossier(
+      MESSAGE_DOSSIER_A_CHOISIR,
+      params.majeur.id,
+      "invalide",
+    );
   }
 
   const dossierIdBrut = champOptionnel(json.dossier_id);
@@ -585,7 +682,8 @@ function loguerClassificationDeuxTemps(params: {
 
 /**
  * Classement en deux temps : A (protégé) puis B (dossier) si majeur trouvé.
- * Propage les erreurs API / réponses invalides (pour la file d'attente).
+ * Échec de B après A réussi → proposition partielle (protégé conservé), sans throw.
+ * Échec de A → throw (file d'attente → echec_classement).
  */
 export async function proposerDocumentNonClasse(
   params: ProposerDocumentParams,
@@ -612,6 +710,7 @@ export async function proposerDocumentNonClasse(
       majeurId: null,
       nomFichier: null,
       nouveauCheminDossier: null,
+      avertissementDossier: null,
     };
   }
 
@@ -632,37 +731,68 @@ export async function proposerDocumentNonClasse(
       majeurId: null,
       nomFichier: null,
       nouveauCheminDossier: null,
+      avertissementDossier: null,
     };
   }
 
   const dossiers = await params.chargerDossiers(majeur.id);
 
-  const classement = await choisirDossierPourProtege({
-    nomOriginal: params.nomOriginal,
-    typeDocument: params.typeDocument,
-    majeur,
-    dossiers,
-    pdfBytes: params.pdfBytes,
-    imageBase64: params.imageBase64,
-    imageMediaType: params.imageMediaType,
-  });
+  try {
+    const classement = await choisirDossierPourProtege({
+      nomOriginal: params.nomOriginal,
+      typeDocument: params.typeDocument,
+      majeur,
+      dossiers,
+      pdfBytes: params.pdfBytes,
+      imageBase64: params.imageBase64,
+      imageMediaType: params.imageMediaType,
+    });
 
-  const confianceGlobale: ConfianceClassification =
-    identification.confiance === "haute" && classement.confiance === "haute"
-      ? "haute"
-      : "basse";
+    const confianceGlobale: ConfianceClassification =
+      identification.confiance === "haute" && classement.confiance === "haute"
+        ? "haute"
+        : "basse";
 
-  loguerClassificationDeuxTemps({
-    fichier: params.nomOriginal,
-    identification,
-    classement,
-    confianceGlobale,
-  });
+    loguerClassificationDeuxTemps({
+      fichier: params.nomOriginal,
+      identification,
+      classement,
+      confianceGlobale,
+    });
 
-  return {
-    gedDossierId: classement.gedDossierId,
-    majeurId: majeur.id,
-    nomFichier: classement.nomFichier,
-    nouveauCheminDossier: classement.nouveauCheminDossier,
-  };
+    return {
+      gedDossierId: classement.gedDossierId,
+      majeurId: majeur.id,
+      nomFichier: classement.nomFichier,
+      nouveauCheminDossier: classement.nouveauCheminDossier,
+      avertissementDossier: null,
+    };
+  } catch (error) {
+    const avertissement =
+      error instanceof ErreurChoixDossier
+        ? error.message
+        : MESSAGE_DOSSIER_A_CHOISIR;
+
+    console.error(
+      "[proposerDocumentNonClasse] appel B échoué, protégé conservé:",
+      params.nomOriginal,
+      avertissement,
+      error,
+    );
+
+    loguerClassificationDeuxTemps({
+      fichier: params.nomOriginal,
+      identification,
+      classement: null,
+      confianceGlobale: "basse",
+    });
+
+    return {
+      gedDossierId: null,
+      majeurId: majeur.id,
+      nomFichier: null,
+      nouveauCheminDossier: null,
+      avertissementDossier: avertissement,
+    };
+  }
 }

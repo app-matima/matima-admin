@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, it, mock } from "node:test";
 import { PDFDocument } from "pdf-lib";
 import {
   choisirDossierPourProtege,
+  MESSAGE_DOSSIER_A_CHOISIR,
+  MESSAGE_DOSSIER_REFUS,
   proposerDocumentNonClasse,
   resoudreDossierId,
   type DossierPourProposition,
@@ -41,11 +43,20 @@ async function pdfMinimal(): Promise<Uint8Array> {
   return doc.save();
 }
 
-function reponseAnthropic(texte: string, usage = { input_tokens: 10, output_tokens: 5 }) {
+function reponseAnthropic(
+  texte: string,
+  options?: {
+    usage?: { input_tokens: number; output_tokens: number };
+    stop_reason?: string | null;
+    content?: { type: string; text?: string }[];
+  },
+) {
+  const usage = options?.usage ?? { input_tokens: 10, output_tokens: 5 };
   return new Response(
     JSON.stringify({
-      content: [{ type: "text", text: texte }],
+      content: options?.content ?? [{ type: "text", text: texte }],
       usage: { ...usage, cache_read_input_tokens: 0 },
+      stop_reason: options?.stop_reason ?? "end_turn",
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
@@ -190,5 +201,174 @@ describe("classification en deux temps", () => {
       resoudreDossierId("dossier-a", "majeur-a", [DOSSIER_A, DOSSIER_B]),
       "dossier-a",
     );
+  });
+
+  it("appel B vide après A réussi → protégé conservé, avertissement dossier", async () => {
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      appels.push({ body });
+
+      if (appels.length === 1) {
+        return reponseAnthropic(
+          JSON.stringify({
+            nom_lu_dans_document: "Jean Dupont",
+            majeur_id: "majeur-a",
+            confiance: "haute",
+          }),
+        );
+      }
+
+      return reponseAnthropic("", {
+        stop_reason: "end_turn",
+        content: [{ type: "thinking", text: "…" }],
+      });
+    }) as typeof fetch;
+
+    const result = await proposerDocumentNonClasse({
+      nomOriginal: "scan.pdf",
+      typeDocument: "application/pdf",
+      majeurs: [MAJEUR_A],
+      chargerDossiers: async () => [DOSSIER_A],
+      pdfBytes: await pdfMinimal(),
+    });
+
+    assert.equal(result.majeurId, "majeur-a");
+    assert.equal(result.gedDossierId, null);
+    assert.equal(result.nouveauCheminDossier, null);
+    assert.equal(result.avertissementDossier, MESSAGE_DOSSIER_A_CHOISIR);
+    assert.equal(appels.length, 2);
+    assert.equal(appels[1]!.body.max_tokens, 2000);
+  });
+
+  it("premier bloc non texte suivi d'un bloc texte → texte concaténé exploité", async () => {
+    const jsonB = JSON.stringify({
+      emetteur: "EDF",
+      type_document: "facture",
+      famille: "FACTURES ET ABONNEMENTS",
+      dossier_id: "dossier-a",
+      nouveau_chemin_dossier: null,
+      nom_fichier: "facture.pdf",
+      confiance: "haute",
+    });
+
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      appels.push({ body });
+
+      if (appels.length === 1) {
+        return reponseAnthropic(
+          JSON.stringify({
+            nom_lu_dans_document: "Jean Dupont",
+            majeur_id: "majeur-a",
+            confiance: "haute",
+          }),
+        );
+      }
+
+      return reponseAnthropic("", {
+        content: [
+          { type: "thinking", text: "analyse interne" },
+          { type: "text", text: jsonB },
+        ],
+      });
+    }) as typeof fetch;
+
+    const result = await proposerDocumentNonClasse({
+      nomOriginal: "scan.pdf",
+      typeDocument: "application/pdf",
+      majeurs: [MAJEUR_A],
+      chargerDossiers: async () => [DOSSIER_A],
+      pdfBytes: await pdfMinimal(),
+    });
+
+    assert.equal(result.majeurId, "majeur-a");
+    assert.equal(result.gedDossierId, "dossier-a");
+    assert.equal(result.avertissementDossier, null);
+  });
+
+  it("max_tokens puis succès à la relance (4000)", async () => {
+    const jsonB = JSON.stringify({
+      emetteur: "EDF",
+      type_document: "facture",
+      famille: "FACTURES ET ABONNEMENTS",
+      dossier_id: "dossier-a",
+      nouveau_chemin_dossier: null,
+      nom_fichier: "facture.pdf",
+      confiance: "haute",
+    });
+
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      appels.push({ body });
+
+      if (appels.length === 1) {
+        return reponseAnthropic(
+          JSON.stringify({
+            nom_lu_dans_document: "Jean Dupont",
+            majeur_id: "majeur-a",
+            confiance: "haute",
+          }),
+        );
+      }
+
+      if (appels.length === 2) {
+        assert.equal(body.max_tokens, 2000);
+        return reponseAnthropic("", {
+          stop_reason: "max_tokens",
+          content: [{ type: "text", text: "" }],
+        });
+      }
+
+      assert.equal(body.max_tokens, 4000);
+      return reponseAnthropic(jsonB, { stop_reason: "end_turn" });
+    }) as typeof fetch;
+
+    const result = await proposerDocumentNonClasse({
+      nomOriginal: "scan.pdf",
+      typeDocument: "application/pdf",
+      majeurs: [MAJEUR_A],
+      chargerDossiers: async () => [DOSSIER_A],
+      pdfBytes: await pdfMinimal(),
+    });
+
+    assert.equal(appels.length, 3);
+    assert.equal(result.majeurId, "majeur-a");
+    assert.equal(result.gedDossierId, "dossier-a");
+    assert.equal(result.avertissementDossier, null);
+  });
+
+  it("refusal → protégé conservé, message manuel, pas de relance", async () => {
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      appels.push({ body });
+
+      if (appels.length === 1) {
+        return reponseAnthropic(
+          JSON.stringify({
+            nom_lu_dans_document: "Jean Dupont",
+            majeur_id: "majeur-a",
+            confiance: "haute",
+          }),
+        );
+      }
+
+      return reponseAnthropic("", {
+        stop_reason: "refusal",
+        content: [{ type: "text", text: "" }],
+      });
+    }) as typeof fetch;
+
+    const result = await proposerDocumentNonClasse({
+      nomOriginal: "scan.pdf",
+      typeDocument: "application/pdf",
+      majeurs: [MAJEUR_A],
+      chargerDossiers: async () => [DOSSIER_A],
+      pdfBytes: await pdfMinimal(),
+    });
+
+    assert.equal(appels.length, 2, "pas de relance après refusal");
+    assert.equal(result.majeurId, "majeur-a");
+    assert.equal(result.gedDossierId, null);
+    assert.equal(result.avertissementDossier, MESSAGE_DOSSIER_REFUS);
   });
 });

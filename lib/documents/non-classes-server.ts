@@ -209,6 +209,7 @@ async function appliquerPropositionSurDocument(params: {
     proposition_suggestion_dossier_existant: suggestionDossierExistant,
     proposition_nom: params.proposition.nomFichier,
     ...statut,
+    erreur_classement: params.proposition.avertissementDossier?.trim() || null,
   };
 
   if (params.proposition.nomFichier) {

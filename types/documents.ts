@@ -52,6 +52,8 @@ export interface PropositionDocumentIA {
   majeurId: string | null;
   nomFichier: string | null;
   nouveauCheminDossier: string[] | null;
+  /** Message soft (ex. B a échoué) : statut reste « classe », dossier à choisir à la main. */
+  avertissementDossier?: string | null;
 }
 
 export interface DocumentNonClasse extends Document {

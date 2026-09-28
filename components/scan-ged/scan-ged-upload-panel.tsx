@@ -163,7 +163,8 @@ function ligneVersParamsValidation(ligne: LigneDocument) {
 }
 
 function lignePreteAValider(ligne: LigneDocument): boolean {
-  if (ligne.statutClassement !== STATUT_CLASSEMENT_CLASSE) {
+  // Seuls les documents encore en file d'attente IA ne sont pas validables.
+  if (ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE) {
     return false;
   }
 
@@ -366,7 +367,7 @@ export function ScanGedUploadPanel({
     ligne: LigneDocument,
     nouveauMajeurId: string,
   ) {
-    if (ligne.statutClassement !== STATUT_CLASSEMENT_CLASSE) {
+    if (ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE) {
       return;
     }
 
@@ -823,6 +824,8 @@ export function ScanGedUploadPanel({
               ligne.statutClassement === STATUT_CLASSEMENT_ECHEC;
             const estEnAttente =
               ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE;
+            const estModifiable = !estEnAttente;
+            const messageAvertissement = ligne.erreurClassement;
 
             return (
               <div
@@ -848,10 +851,22 @@ export function ScanGedUploadPanel({
                   )}
                 </div>
 
-                {estEchec && ligne.erreurClassement && (
-                  <div className="mb-3 rounded-lg border border-[#FECACA] bg-[#FEF2F2] px-3 py-2">
-                    <p className="text-xs text-[#991B1B]">
-                      {ligne.erreurClassement}
+                {messageAvertissement && (
+                  <div
+                    className={cn(
+                      "mb-3 rounded-lg border px-3 py-2",
+                      estEchec
+                        ? "border-[#FECACA] bg-[#FEF2F2]"
+                        : "border-[#FDE68A] bg-[#FFFBEB]",
+                    )}
+                  >
+                    <p
+                      className={cn(
+                        "text-xs",
+                        estEchec ? "text-[#991B1B]" : "text-[#B45309]",
+                      )}
+                    >
+                      {messageAvertissement}
                     </p>
                   </div>
                 )}
@@ -872,7 +887,7 @@ export function ScanGedUploadPanel({
                           nom: event.target.value,
                         })
                       }
-                      disabled={!estClasse}
+                      disabled={!estModifiable}
                       className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
                     />
                   </div>
@@ -891,7 +906,7 @@ export function ScanGedUploadPanel({
                         void changerProtegeLigne(ligne, event.target.value);
                       }}
                       disabled={
-                        !estClasse ||
+                        !estModifiable ||
                         chargementDossiersMajeurId === ligne.majeurId
                       }
                       className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
@@ -929,7 +944,7 @@ export function ScanGedUploadPanel({
                             : undefined,
                       })
                     }
-                    disabled={!estClasse || !ligne.majeurId}
+                    disabled={!estModifiable || !ligne.majeurId}
                   />
 
                   <div className="flex flex-wrap gap-2 lg:justify-end lg:pt-6">
