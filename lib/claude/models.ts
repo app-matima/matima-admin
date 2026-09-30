@@ -1,4 +1,5 @@
 export const CLAUDE_MODEL_HAIKU = "claude-haiku-4-5-20251001";
+export const CLAUDE_MODEL_SONNET = "claude-sonnet-4-6";
 
 /** Défaut appel A — identification du protégé. */
 export const CLASSIFICATION_MODELE_PROTEGE_DEFAUT = CLAUDE_MODEL_HAIKU;

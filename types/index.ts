@@ -61,3 +61,15 @@ export interface DashboardData {
   dernieresPrestations: PrestationAvecRelations[];
   nouveauxClients: Organisation[];
 }
+
+/** Aligné sur matima-app — comptes / relevés bancaires. */
+export type TypeTransaction = "revenu" | "depense";
+
+export interface CategorieTransaction {
+  id: string;
+  nom: string;
+  type: TypeTransaction;
+  icone?: string | null;
+  couleur?: string | null;
+  created_at?: string;
+}

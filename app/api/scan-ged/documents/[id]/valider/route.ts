@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { deplacerEtClasserDocument } from "@/lib/documents/non-classes-server";
+import { lancerExtractionReleveEnArrierePlan } from "@/lib/documents/declencher-extraction-releve-apres-classement";
+import {
+  DocumentDejaClasseError,
+  MESSAGE_DOCUMENT_DEJA_CLASSE,
+} from "@/lib/scan-ged/filtrer-documents-admin";
 import { createAdminClient } from "@/lib/supabase/server";
 import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 import type { DocumentNonClasse } from "@/types/documents";
@@ -83,13 +88,26 @@ export async function PATCH(
     .from("documents")
     .select("*")
     .eq("id", id)
-    .is("majeur_id", null)
-    .single();
+    .maybeSingle();
 
-  if (documentError || !document) {
+  if (documentError) {
+    return NextResponse.json(
+      { error: documentError.message },
+      { status: 500 },
+    );
+  }
+
+  if (!document) {
     return NextResponse.json(
       { error: "Document introuvable." },
       { status: 404 },
+    );
+  }
+
+  if (document.majeur_id != null) {
+    return NextResponse.json(
+      { error: MESSAGE_DOCUMENT_DEJA_CLASSE },
+      { status: 409 },
     );
   }
 
@@ -102,10 +120,20 @@ export async function PATCH(
       nom: body.nom,
     });
 
+    lancerExtractionReleveEnArrierePlan({
+      documentId: documentClasse.id,
+      typeDocument: documentClasse.type_document,
+      gedDossierId: documentClasse.ged_dossier_id,
+    });
+
     revalidatePath("/scan-ged");
 
     return NextResponse.json(documentClasse);
   } catch (error) {
+    if (error instanceof DocumentDejaClasseError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+
     const message =
       error instanceof Error
         ? error.message

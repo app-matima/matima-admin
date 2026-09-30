@@ -1,8 +1,14 @@
 import { createAdminClient } from "@/lib/supabase/server";
 import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
+import { filtrerDocumentsPourAdmin } from "@/lib/scan-ged/filtrer-documents-admin";
 import type { MjpmProfile } from "@/types/clients";
-import type { ScanGedOrganisation } from "@/types/scan-ged";
+import type { DocumentNonClasse } from "@/types/documents";
+import type {
+  ScanGedAdminInfo,
+  ScanGedOrganisation,
+  ScanGedOrganisationContext,
+} from "@/types/scan-ged";
 
 interface OrganisationRow {
   id: string;
@@ -94,20 +100,28 @@ export async function getScanGedOrganisations(): Promise<ScanGedOrganisation[]> 
 
 export async function getScanGedOrganisationContext(
   organisationId: string,
-) {
+  options: {
+    adminUserId: string;
+    voirTous?: boolean;
+  },
+): Promise<ScanGedOrganisationContext> {
+  const vide: ScanGedOrganisationContext = {
+    dossiers: [],
+    majeurs: [],
+    documents: [],
+    adminCourantId: options.adminUserId,
+    scanAdmins: [],
+  };
+
   const supabase = createAdminClient();
   const organisationIds = await getNonDemoOrganisationIds();
 
   if (!organisationIds.includes(organisationId)) {
-    return {
-      dossiers: [],
-      majeurs: [],
-      documents: [],
-    };
+    return vide;
   }
 
   try {
-    const [majeurs, documents] = await Promise.all([
+    const [majeurs, documentsBruts] = await Promise.all([
       chargerToutesLesLignes<{ id: string; nom: string; prenom: string }>(() =>
         supabase
           .from("majeurs")
@@ -115,7 +129,7 @@ export async function getScanGedOrganisationContext(
           .eq("organisation_id", organisationId)
           .eq("statut", "actif"),
       ),
-      chargerToutesLesLignes<Record<string, unknown>>(() =>
+      chargerToutesLesLignes<DocumentNonClasse>(() =>
         supabase
           .from("documents")
           .select("*")
@@ -128,24 +142,51 @@ export async function getScanGedOrganisationContext(
       a.nom.localeCompare(b.nom, "fr", { sensitivity: "base" }),
     );
 
-    const documentsTries = [...documents].sort((a, b) => {
+    const voirTous = Boolean(options.voirTous);
+    const documentsFiltres = filtrerDocumentsPourAdmin(
+      documentsBruts,
+      options.adminUserId,
+      voirTous,
+    );
+
+    const documentsTries = [...documentsFiltres].sort((a, b) => {
       const dateA = String(a.created_at ?? "");
       const dateB = String(b.created_at ?? "");
       return dateB.localeCompare(dateA);
     });
+
+    const adminIds = [
+      ...new Set(
+        documentsTries
+          .map((document) => document.scan_admin_user_id)
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+
+    let scanAdmins: ScanGedAdminInfo[] = [];
+    if (adminIds.length > 0) {
+      const { data: admins, error: adminsError } = await supabase
+        .from("admin_users")
+        .select("id, nom, prenom")
+        .in("id", adminIds);
+
+      if (adminsError) {
+        console.error("getScanGedOrganisationContext admins", adminsError);
+      } else {
+        scanAdmins = (admins ?? []) as ScanGedAdminInfo[];
+      }
+    }
 
     return {
       // Les dossiers GED sont chargés à la demande par protégé (évite la troncature à 1 000).
       dossiers: [],
       majeurs: majeursTries,
       documents: documentsTries,
+      adminCourantId: options.adminUserId,
+      scanAdmins,
     };
   } catch (error) {
     console.error("getScanGedOrganisationContext", error);
-    return {
-      dossiers: [],
-      majeurs: [],
-      documents: [],
-    };
+    return vide;
   }
 }

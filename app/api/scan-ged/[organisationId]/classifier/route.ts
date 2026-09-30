@@ -19,7 +19,8 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ organisationId: string }> },
 ) {
-  if (!(await requireScanGedAccess())) {
+  const admin = await requireScanGedAccess();
+  if (!admin) {
     return NextResponse.json({ error: "Action non autorisée." }, { status: 403 });
   }
 
@@ -65,6 +66,7 @@ export async function POST(
     await enregistrerDocumentsInboxDepuisStoragePaths({
       storagePaths,
       organisationId,
+      scanAdminUserId: admin.id,
     });
 
   if (documents.length === 0) {

@@ -18,12 +18,14 @@ interface TraiterLotBody {
 /**
  * POST /api/scan-ged/[organisationId]/traiter-lot
  * Traite N documents en_attente_classement (défaut 5), isolément.
+ * Limité aux documents de l'admin connecté (+ legacy null).
  */
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ organisationId: string }> },
 ) {
-  if (!(await requireScanGedAccess())) {
+  const admin = await requireScanGedAccess();
+  if (!admin) {
     return NextResponse.json({ error: "Action non autorisée." }, { status: 403 });
   }
 
@@ -71,6 +73,7 @@ export async function POST(
   try {
     const resultat = await traiterLotClassementScanGed({
       organisationId,
+      adminUserId: admin.id,
       taille: tailleBrute,
       documentIds,
     });

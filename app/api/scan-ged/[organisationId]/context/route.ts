@@ -5,10 +5,11 @@ import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 export const runtime = "nodejs";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ organisationId: string }> },
 ) {
-  if (!(await requireScanGedAccess())) {
+  const admin = await requireScanGedAccess();
+  if (!admin) {
     return NextResponse.json({ error: "Action non autorisée." }, { status: 403 });
   }
 
@@ -21,7 +22,15 @@ export async function GET(
     );
   }
 
-  const context = await getScanGedOrganisationContext(organisationId);
+  const url = new URL(request.url);
+  const voirTous =
+    url.searchParams.get("tous") === "1" ||
+    url.searchParams.get("tous") === "true";
+
+  const context = await getScanGedOrganisationContext(organisationId, {
+    adminUserId: admin.id,
+    voirTous,
+  });
 
   return NextResponse.json(context);
 }

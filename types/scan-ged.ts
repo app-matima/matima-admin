@@ -11,8 +11,18 @@ export interface ScanGedOrganisation {
   mjpm: MjpmProfile | null;
 }
 
+export interface ScanGedAdminInfo {
+  id: string;
+  nom: string;
+  prenom: string;
+}
+
 export interface ScanGedOrganisationContext {
   dossiers: GedDossier[];
   majeurs: MajeurActif[];
   documents: DocumentNonClasse[];
+  /** Admin connecté (pour filtrage côté client / libellés). */
+  adminCourantId: string | null;
+  /** Admins ayant scanné au moins un document de la liste. */
+  scanAdmins: ScanGedAdminInfo[];
 }

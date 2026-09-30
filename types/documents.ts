@@ -44,6 +44,8 @@ export interface Document {
   proposition_nom?: string | null;
   statut_classement?: StatutClassementDocument | null;
   erreur_classement?: string | null;
+  /** Admin Scan GED qui a uploadé (null = matima-app ou legacy). */
+  scan_admin_user_id?: string | null;
   created_at?: string;
 }
 

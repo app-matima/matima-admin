@@ -28,6 +28,10 @@ import {
   traiterPaquetDocumentsIndependamment,
   type DetailTraitementLot,
 } from "@/lib/documents/scan-ged-file-attente";
+import {
+  DocumentDejaClasseError,
+  filtreOrDocumentsAdmin,
+} from "@/lib/scan-ged/filtrer-documents-admin";
 import { createAdminClient } from "@/lib/supabase/server";
 import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -131,6 +135,7 @@ async function insererDocumentEnAttenteClassement(
   organisationId: string,
   adminClient: SupabaseClient,
   index: number,
+  scanAdminUserId: string | null,
 ): Promise<DocumentNonClasse> {
   const { data, error } = await adminClient
     .from("documents")
@@ -145,6 +150,7 @@ async function insererDocumentEnAttenteClassement(
       taille_bytes: entree.bytes.byteLength,
       statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
       erreur_classement: null,
+      scan_admin_user_id: scanAdminUserId,
       proposition_majeur_id: null,
       proposition_ged_dossier_id: null,
       proposition_nouveau_chemin_dossier: null,
@@ -264,10 +270,13 @@ async function marquerEchecClassement(params: {
 export async function enregistrerDocumentsInboxDepuisStoragePaths(params: {
   storagePaths: string[];
   organisationId: string;
+  /** Admin Scan GED connecté (null = ne pas renseigner, ex. matima-app). */
+  scanAdminUserId?: string | null;
 }): Promise<{ documents: DocumentNonClasse[]; erreurs: string[] }> {
   const adminClient = createAdminClient();
   const erreurs: string[] = [];
   const entrees: EntreeTeleversee[] = [];
+  const scanAdminUserId = params.scanAdminUserId ?? null;
 
   for (const storagePath of params.storagePaths) {
     try {
@@ -298,6 +307,7 @@ export async function enregistrerDocumentsInboxDepuisStoragePaths(params: {
         params.organisationId,
         adminClient,
         index,
+        scanAdminUserId,
       );
       documents.push(document);
     } catch (error) {
@@ -324,19 +334,27 @@ export async function classerDocumentsInboxDepuisStoragePaths(params: {
 
 /**
  * Compte les documents en file d'attente (pagination au-delà de 1 000).
+ * Si adminUserId est fourni : uniquement ses docs + legacy (null).
  */
 export async function compterDocumentsEnAttenteClassement(
   organisationId: string,
   adminClient: SupabaseClient = createAdminClient(),
+  adminUserId?: string | null,
 ): Promise<number> {
-  const lignes = await chargerToutesLesLignes<{ id: string }>(() =>
-    adminClient
+  const lignes = await chargerToutesLesLignes<{ id: string }>(() => {
+    let requete = adminClient
       .from("documents")
       .select("id")
       .eq("organisation_id", organisationId)
       .eq("statut_classement", STATUT_CLASSEMENT_EN_ATTENTE)
-      .is("majeur_id", null),
-  );
+      .is("majeur_id", null);
+
+    if (adminUserId) {
+      requete = requete.or(filtreOrDocumentsAdmin(adminUserId));
+    }
+
+    return requete;
+  });
   return lignes.length;
 }
 
@@ -370,9 +388,11 @@ async function classerUnDocumentEnAttente(params: {
 
 /**
  * Traite un paquet de documents en_attente_classement (ou une liste explicite).
+ * Limité aux documents de l'admin connecté (+ legacy null).
  */
 export async function traiterLotClassementScanGed(params: {
   organisationId: string;
+  adminUserId: string;
   taille?: number;
   documentIds?: string[];
 }): Promise<{
@@ -386,6 +406,7 @@ export async function traiterLotClassementScanGed(params: {
     Math.max(params.taille ?? TAILLE_LOT_CLASSEMENT_DEFAUT, 1),
     20,
   );
+  const filtreAdmin = filtreOrDocumentsAdmin(params.adminUserId);
 
   const majeurs = await chargerToutesLesLignes<MajeurRow>(() =>
     adminClient
@@ -404,6 +425,7 @@ export async function traiterLotClassementScanGed(params: {
       .select("*")
       .eq("organisation_id", params.organisationId)
       .is("majeur_id", null)
+      .or(filtreAdmin)
       .in("id", ids);
 
     if (error) {
@@ -450,6 +472,7 @@ export async function traiterLotClassementScanGed(params: {
       .eq("organisation_id", params.organisationId)
       .eq("statut_classement", STATUT_CLASSEMENT_EN_ATTENTE)
       .is("majeur_id", null)
+      .or(filtreAdmin)
       .order("created_at", { ascending: true })
       .limit(taille);
 
@@ -496,6 +519,7 @@ export async function traiterLotClassementScanGed(params: {
   const restant = await compterDocumentsEnAttenteClassement(
     params.organisationId,
     adminClient,
+    params.adminUserId,
   );
 
   return {
@@ -822,11 +846,16 @@ export async function deplacerEtClasserDocument(params: {
       erreur_classement: null,
     })
     .eq("id", params.document.id)
+    .is("majeur_id", null)
     .select("*")
-    .single();
+    .maybeSingle();
 
-  if (error || !data) {
-    throw new Error(error?.message ?? "Impossible de classer le document.");
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    throw new DocumentDejaClasseError();
   }
 
   return data as DocumentNonClasse;
