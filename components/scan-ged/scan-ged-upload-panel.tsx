@@ -33,6 +33,11 @@ import {
   STATUT_CLASSEMENT_EN_ATTENTE,
 } from "@/lib/documents/scan-ged-file-attente";
 import { MESSAGE_DOCUMENT_DEJA_CLASSE } from "@/lib/scan-ged/filtrer-documents-admin";
+import {
+  getStatutMajeurBadgeVariantScan,
+  getStatutMajeurLabelSingulier,
+  libelleOptionMajeurScanGed,
+} from "@/lib/scan-ged/majeurs-scan-ged";
 import { MESSAGE_REPONSE_NON_JSON } from "@/lib/documents/orchestrer-deplacement-classement";
 import type { StatutClassementDocument } from "@/types/documents";
 import { cn } from "@/lib/utils";
@@ -990,25 +995,47 @@ export function ScanGedUploadPanel({
                     >
                       Protégé
                     </label>
-                    <select
-                      id={`majeur-${ligne.documentId}`}
-                      value={ligne.majeurId}
-                      onChange={(event) => {
-                        void changerProtegeLigne(ligne, event.target.value);
-                      }}
-                      disabled={
-                        !estModifiable ||
-                        chargementDossiersMajeurId === ligne.majeurId
-                      }
-                      className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
-                    >
-                      <option value="">Sélectionner…</option>
-                      {majeurs.map((majeur) => (
-                        <option key={majeur.id} value={majeur.id}>
-                          {majeur.nom} {majeur.prenom}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <select
+                        id={`majeur-${ligne.documentId}`}
+                        value={ligne.majeurId}
+                        onChange={(event) => {
+                          void changerProtegeLigne(ligne, event.target.value);
+                        }}
+                        disabled={
+                          !estModifiable ||
+                          chargementDossiersMajeurId === ligne.majeurId
+                        }
+                        className="w-full rounded-lg border border-border bg-page px-3 py-2 text-sm text-text-strong focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/30 disabled:opacity-60"
+                      >
+                        <option value="">Sélectionner…</option>
+                        {majeurs.map((majeur) => (
+                          <option key={majeur.id} value={majeur.id}>
+                            {libelleOptionMajeurScanGed({
+                              nom: majeur.nom,
+                              prenom: majeur.prenom,
+                              statut: majeur.statut ?? "actif",
+                            })}
+                          </option>
+                        ))}
+                      </select>
+                      {(() => {
+                        const selection = majeurs.find(
+                          (item) => item.id === ligne.majeurId,
+                        );
+                        const statut = selection?.statut;
+                        if (!statut || statut === "actif") {
+                          return null;
+                        }
+                        return (
+                          <Badge
+                            variant={getStatutMajeurBadgeVariantScan(statut)}
+                          >
+                            {getStatutMajeurLabelSingulier(statut)}
+                          </Badge>
+                        );
+                      })()}
+                    </div>
                   </div>
 
                   <GedDossierSelect

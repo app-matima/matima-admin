@@ -2,8 +2,12 @@ import { createAdminClient } from "@/lib/supabase/server";
 import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
 import { filtrerDocumentsPourAdmin } from "@/lib/scan-ged/filtrer-documents-admin";
+import {
+  estStatutMajeur,
+  trierMajeursScanGed,
+} from "@/lib/scan-ged/majeurs-scan-ged";
 import type { MjpmProfile } from "@/types/clients";
-import type { DocumentNonClasse } from "@/types/documents";
+import type { DocumentNonClasse, MajeurActif, StatutMajeur } from "@/types/documents";
 import type {
   ScanGedAdminInfo,
   ScanGedOrganisation,
@@ -121,13 +125,18 @@ export async function getScanGedOrganisationContext(
   }
 
   try {
-    const [majeurs, documentsBruts] = await Promise.all([
-      chargerToutesLesLignes<{ id: string; nom: string; prenom: string }>(() =>
+    const [majeursBruts, documentsBruts] = await Promise.all([
+      chargerToutesLesLignes<{
+        id: string;
+        nom: string;
+        prenom: string;
+        statut: string;
+      }>(() =>
         supabase
           .from("majeurs")
-          .select("id, nom, prenom")
+          .select("id, nom, prenom, statut")
           .eq("organisation_id", organisationId)
-          .eq("statut", "actif"),
+          .in("statut", ["actif", "archive", "decede", "mainleve"]),
       ),
       chargerToutesLesLignes<DocumentNonClasse>(() =>
         supabase
@@ -138,9 +147,19 @@ export async function getScanGedOrganisationContext(
       ),
     ]);
 
-    const majeursTries = [...majeurs].sort((a, b) =>
-      a.nom.localeCompare(b.nom, "fr", { sensitivity: "base" }),
-    );
+    const majeursTyped: Array<MajeurActif & { statut: StatutMajeur }> =
+      majeursBruts
+        .filter((majeur): majeur is typeof majeur & { statut: StatutMajeur } =>
+          estStatutMajeur(majeur.statut),
+        )
+        .map((majeur) => ({
+          id: majeur.id,
+          nom: majeur.nom,
+          prenom: majeur.prenom,
+          statut: majeur.statut,
+        }));
+
+    const majeursTries = trierMajeursScanGed(majeursTyped);
 
     const voirTous = Boolean(options.voirTous);
     const documentsFiltres = filtrerDocumentsPourAdmin(

@@ -6,6 +6,7 @@ import {
   MAX_DOCUMENTS_VALIDER_TOUT,
   MESSAGE_FICHIER_INTROUVABLE,
 } from "@/lib/documents/orchestrer-deplacement-classement";
+import { chargerMajeurPourClassementScanGed } from "@/lib/scan-ged/charger-majeur-pour-classement";
 import {
   DocumentDejaClasseError,
   documentAppartientAAdmin,
@@ -147,11 +148,25 @@ export async function POST(request: Request) {
         continue;
       }
 
+      const majeur = await chargerMajeurPourClassementScanGed(supabase, {
+        majeurId: entree.majeurId,
+        organisationId: (document as DocumentNonClasse).organisation_id,
+      });
+
+      if (!majeur) {
+        erreurs.push({
+          documentId: entree.documentId,
+          message:
+            "Protégé introuvable ou n'appartenant pas à cette organisation.",
+        });
+        continue;
+      }
+
       const documentClasse = await deplacerEtClasserDocument({
         document: document as DocumentNonClasse,
         gedDossierId,
         nouveauCheminDossier: nouveauChemin,
-        majeurId: entree.majeurId,
+        majeurId: majeur.id,
         nom: entree.nom,
       });
 

@@ -2,6 +2,7 @@ import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { deplacerEtClasserDocument } from "@/lib/documents/non-classes-server";
 import { declencherExtractionReleveApresClassement } from "@/lib/documents/declencher-extraction-releve-apres-classement";
+import { chargerMajeurPourClassementScanGed } from "@/lib/scan-ged/charger-majeur-pour-classement";
 import {
   DocumentDejaClasseError,
   MESSAGE_DOCUMENT_DEJA_CLASSE,
@@ -112,12 +113,27 @@ export async function PATCH(
     );
   }
 
+  const majeur = await chargerMajeurPourClassementScanGed(supabase, {
+    majeurId: body.majeurId,
+    organisationId: (document as DocumentNonClasse).organisation_id,
+  });
+
+  if (!majeur) {
+    return NextResponse.json(
+      {
+        error:
+          "Protégé introuvable ou n'appartenant pas à cette organisation.",
+      },
+      { status: 400 },
+    );
+  }
+
   try {
     const documentClasse = await deplacerEtClasserDocument({
       document: document as DocumentNonClasse,
       gedDossierId,
       nouveauCheminDossier: nouveauChemin,
-      majeurId: body.majeurId,
+      majeurId: majeur.id,
       nom: body.nom,
     });
 

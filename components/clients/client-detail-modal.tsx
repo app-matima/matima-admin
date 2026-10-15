@@ -179,7 +179,7 @@ export function ClientDetailModal({
                 onPlanUpdated={handlePlanUpdated}
               />
 
-              <section className="grid grid-cols-3 gap-3">
+              <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {statutsMajeurModal.map((statut) => (
                   <div
                     key={statut}

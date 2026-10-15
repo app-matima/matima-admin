@@ -71,8 +71,13 @@ export interface DocumentNonClasse extends Document {
   erreur_classement?: string | null;
 }
 
+/** Statuts protégés — aligné CHECK majeurs_statif_check / matima-app. */
+export type StatutMajeur = "actif" | "archive" | "decede" | "mainleve";
+
 export interface MajeurActif {
   id: string;
   nom: string;
   prenom: string;
+  /** Présent dans le contexte Scan GED (tous statuts). */
+  statut?: StatutMajeur;
 }

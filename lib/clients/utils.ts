@@ -28,7 +28,7 @@ export function matchesMjpmSearch(
 }
 
 export function getStatutMajeurLabel(
-  statut: "actif" | "archive" | "decede",
+  statut: "actif" | "archive" | "decede" | "mainleve",
 ): string {
   switch (statut) {
     case "actif":
@@ -37,14 +37,16 @@ export function getStatutMajeurLabel(
       return "Archivés";
     case "decede":
       return "Décédés";
+    case "mainleve":
+      return "Mainlevée";
     default:
       return statut;
   }
 }
 
 export function getStatutMajeurBadgeVariant(
-  statut: "actif" | "archive" | "decede",
-): "success" | "neutral" | "danger" {
+  statut: "actif" | "archive" | "decede" | "mainleve",
+): "success" | "neutral" | "danger" | "warning" {
   switch (statut) {
     case "actif":
       return "success";
@@ -52,6 +54,8 @@ export function getStatutMajeurBadgeVariant(
       return "neutral";
     case "decede":
       return "danger";
+    case "mainleve":
+      return "warning";
     default:
       return "neutral";
   }

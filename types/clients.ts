@@ -23,6 +23,7 @@ export interface ProtegesParStatut {
   actif: number;
   archive: number;
   decede: number;
+  mainleve: number;
 }
 
 export interface ClientPrestationItem {
@@ -60,4 +61,5 @@ export const statutsMajeurModal: (keyof ProtegesParStatut)[] = [
   "actif",
   "archive",
   "decede",
+  "mainleve",
 ];

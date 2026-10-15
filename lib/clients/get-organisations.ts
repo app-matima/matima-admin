@@ -104,7 +104,7 @@ async function enrichMjpmProfiles(
 }
 
 function emptyProtegesParStatut(): ProtegesParStatut {
-  return { actif: 0, archive: 0, decede: 0 };
+  return { actif: 0, archive: 0, decede: 0, mainleve: 0 };
 }
 
 function incrementProtegeStatut(
@@ -114,6 +114,7 @@ function incrementProtegeStatut(
   if (statut === "actif") counts.actif += 1;
   if (statut === "archive") counts.archive += 1;
   if (statut === "decede") counts.decede += 1;
+  if (statut === "mainleve") counts.mainleve += 1;
 }
 
 export async function getAllPlans(): Promise<Plan[]> {
