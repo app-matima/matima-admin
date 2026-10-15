@@ -32,6 +32,10 @@ import {
   DocumentDejaClasseError,
   filtreOrDocumentsAdmin,
 } from "@/lib/scan-ged/filtrer-documents-admin";
+import {
+  messageErreurCopieStorage,
+  orchestrerDeplacementClassement,
+} from "@/lib/documents/orchestrer-deplacement-classement";
 import { createAdminClient } from "@/lib/supabase/server";
 import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -812,51 +816,68 @@ export async function deplacerEtClasserDocument(params: {
     params.majeurId,
     nomSecurise,
   );
-
-  const { error: copieError } = await adminClient.storage
-    .from(BUCKET)
-    .copy(params.document.storage_path, nouveauChemin);
-
-  if (copieError) {
-    throw new Error(copieError.message);
-  }
-
-  await adminClient.storage
-    .from(BUCKET)
-    .remove([params.document.storage_path]);
+  const ancienChemin = params.document.storage_path;
 
   const aConsulter = await resoudreAConsulterPourDossier(adminClient, {
     organisationId: params.document.organisation_id,
     gedDossierId: gedDossierIdFinal,
   });
 
-  const { data, error } = await adminClient
-    .from("documents")
-    .update({
-      majeur_id: params.majeurId,
-      ged_dossier_id: gedDossierIdFinal,
-      nom_original: params.nom.trim() || params.document.nom_original,
-      storage_path: nouveauChemin,
-      a_consulter: aConsulter,
-      proposition_ged_dossier_id: null,
-      proposition_nouveau_chemin_dossier: null,
-      proposition_suggestion_dossier_existant: null,
-      proposition_majeur_id: null,
-      proposition_nom: null,
-      erreur_classement: null,
-    })
-    .eq("id", params.document.id)
-    .is("majeur_id", null)
-    .select("*")
-    .maybeSingle();
+  let documentClasse: DocumentNonClasse | null = null;
 
-  if (error) {
-    throw new Error(error.message);
-  }
+  await orchestrerDeplacementClassement({
+    copy: async () => {
+      const { error: copieError } = await adminClient.storage
+        .from(BUCKET)
+        .copy(ancienChemin, nouveauChemin);
 
-  if (!data) {
+      if (copieError) {
+        throw new Error(messageErreurCopieStorage(copieError.message));
+      }
+    },
+    update: async () => {
+      const { data, error } = await adminClient
+        .from("documents")
+        .update({
+          majeur_id: params.majeurId,
+          ged_dossier_id: gedDossierIdFinal,
+          nom_original: params.nom.trim() || params.document.nom_original,
+          storage_path: nouveauChemin,
+          a_consulter: aConsulter,
+          proposition_ged_dossier_id: null,
+          proposition_nouveau_chemin_dossier: null,
+          proposition_suggestion_dossier_existant: null,
+          proposition_majeur_id: null,
+          proposition_nom: null,
+          erreur_classement: null,
+        })
+        .eq("id", params.document.id)
+        .is("majeur_id", null)
+        .select("*")
+        .maybeSingle();
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      if (!data) {
+        return "deja_classe";
+      }
+
+      documentClasse = data as DocumentNonClasse;
+      return "ok";
+    },
+    removeAncien: async () => {
+      await adminClient.storage.from(BUCKET).remove([ancienChemin]);
+    },
+    removeCopie: async () => {
+      await adminClient.storage.from(BUCKET).remove([nouveauChemin]);
+    },
+  });
+
+  if (!documentClasse) {
     throw new DocumentDejaClasseError();
   }
 
-  return data as DocumentNonClasse;
+  return documentClasse;
 }

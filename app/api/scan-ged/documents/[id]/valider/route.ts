@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { deplacerEtClasserDocument } from "@/lib/documents/non-classes-server";
-import { lancerExtractionReleveEnArrierePlan } from "@/lib/documents/declencher-extraction-releve-apres-classement";
+import { declencherExtractionReleveApresClassement } from "@/lib/documents/declencher-extraction-releve-apres-classement";
 import {
   DocumentDejaClasseError,
   MESSAGE_DOCUMENT_DEJA_CLASSE,
@@ -11,6 +11,7 @@ import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 import type { DocumentNonClasse } from "@/types/documents";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 interface ValiderDocumentBody {
   gedDossierId?: string | null;
@@ -120,10 +121,12 @@ export async function PATCH(
       nom: body.nom,
     });
 
-    lancerExtractionReleveEnArrierePlan({
-      documentId: documentClasse.id,
-      typeDocument: documentClasse.type_document,
-      gedDossierId: documentClasse.ged_dossier_id,
+    after(async () => {
+      await declencherExtractionReleveApresClassement({
+        documentId: documentClasse.id,
+        typeDocument: documentClasse.type_document,
+        gedDossierId: documentClasse.ged_dossier_id,
+      });
     });
 
     revalidatePath("/scan-ged");

@@ -1,10 +1,13 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { deplacerEtClasserDocument } from "@/lib/documents/non-classes-server";
-import { lancerExtractionReleveEnArrierePlan } from "@/lib/documents/declencher-extraction-releve-apres-classement";
+import { declencherExtractionReleveApresClassement } from "@/lib/documents/declencher-extraction-releve-apres-classement";
+import {
+  MAX_DOCUMENTS_VALIDER_TOUT,
+  MESSAGE_FICHIER_INTROUVABLE,
+} from "@/lib/documents/orchestrer-deplacement-classement";
 import {
   DocumentDejaClasseError,
-  MESSAGE_DOCUMENT_DEJA_CLASSE,
   documentAppartientAAdmin,
 } from "@/lib/scan-ged/filtrer-documents-admin";
 import { createAdminClient } from "@/lib/supabase/server";
@@ -12,6 +15,7 @@ import { requireScanGedAccess } from "@/lib/scan-ged/auth";
 import type { DocumentNonClasse } from "@/types/documents";
 
 export const runtime = "nodejs";
+export const maxDuration = 120;
 
 interface DocumentAValider {
   documentId: string;
@@ -23,6 +27,11 @@ interface DocumentAValider {
 
 interface ValiderToutBody {
   documents: DocumentAValider[];
+}
+
+export interface ErreurValidationDocument {
+  documentId: string;
+  message: string;
 }
 
 function cheminDossierNonVide(valeur: unknown): string[] | null {
@@ -62,10 +71,28 @@ export async function POST(request: Request) {
     );
   }
 
+  if (body.documents.length > MAX_DOCUMENTS_VALIDER_TOUT) {
+    return NextResponse.json(
+      {
+        error: `Trop de documents dans un seul appel (max ${MAX_DOCUMENTS_VALIDER_TOUT}).`,
+        succes: 0,
+        valides: [],
+        conflits: [],
+        erreurs: [],
+      },
+      { status: 400 },
+    );
+  }
+
   const supabase = createAdminClient();
-  const erreurs: string[] = [];
+  const erreurs: ErreurValidationDocument[] = [];
   const conflits: string[] = [];
   const valides: string[] = [];
+  const extractions: {
+    documentId: string;
+    typeDocument: string;
+    gedDossierId: string | null | undefined;
+  }[] = [];
 
   for (const entree of body.documents) {
     const nouveauChemin = cheminDossierNonVide(entree.nouveauCheminDossier);
@@ -80,7 +107,10 @@ export async function POST(request: Request) {
       (!gedDossierId && !nouveauChemin) ||
       (gedDossierId && nouveauChemin)
     ) {
-      erreurs.push(`${entree.documentId} : champs incomplets`);
+      erreurs.push({
+        documentId: entree.documentId,
+        message: "champs incomplets",
+      });
       continue;
     }
 
@@ -92,13 +122,15 @@ export async function POST(request: Request) {
         .maybeSingle();
 
       if (documentError || !document) {
-        erreurs.push(`${entree.documentId} : introuvable`);
+        erreurs.push({
+          documentId: entree.documentId,
+          message: "introuvable",
+        });
         continue;
       }
 
       if (document.majeur_id != null) {
         conflits.push(entree.documentId);
-        erreurs.push(`${entree.documentId} : ${MESSAGE_DOCUMENT_DEJA_CLASSE}`);
         continue;
       }
 
@@ -108,9 +140,10 @@ export async function POST(request: Request) {
           admin.id,
         )
       ) {
-        erreurs.push(
-          `${entree.documentId} : document d'un autre administrateur`,
-        );
+        erreurs.push({
+          documentId: entree.documentId,
+          message: "document d'un autre administrateur",
+        });
         continue;
       }
 
@@ -122,37 +155,58 @@ export async function POST(request: Request) {
         nom: entree.nom,
       });
 
-      lancerExtractionReleveEnArrierePlan({
+      valides.push(entree.documentId);
+      extractions.push({
         documentId: documentClasse.id,
         typeDocument: documentClasse.type_document,
         gedDossierId: documentClasse.ged_dossier_id,
       });
-
-      valides.push(entree.documentId);
     } catch (error) {
       if (error instanceof DocumentDejaClasseError) {
         conflits.push(entree.documentId);
-        erreurs.push(`${entree.documentId} : ${error.message}`);
         continue;
       }
 
       const message =
         error instanceof Error ? error.message : "Erreur de validation";
-      erreurs.push(`${entree.documentId} : ${message}`);
+      erreurs.push({
+        documentId: entree.documentId,
+        message:
+          message.trim() === MESSAGE_FICHIER_INTROUVABLE
+            ? MESSAGE_FICHIER_INTROUVABLE
+            : message,
+      });
     }
   }
 
-  if (valides.length === 0 && erreurs.length === body.documents.length) {
-    const status = conflits.length === body.documents.length ? 409 : 400;
-    return NextResponse.json({ error: erreurs.join(" | "), conflits }, { status });
+  if (extractions.length > 0) {
+    after(async () => {
+      for (const item of extractions) {
+        await declencherExtractionReleveApresClassement(item);
+      }
+    });
   }
 
   revalidatePath("/scan-ged");
 
+  // Aucun succès ni conflit idempotent : échec global du lot
+  if (valides.length === 0 && conflits.length === 0) {
+    return NextResponse.json(
+      {
+        error: erreurs.map((e) => `${e.documentId} : ${e.message}`).join(" | "),
+        succes: 0,
+        valides,
+        conflits,
+        erreurs,
+      },
+      { status: 400 },
+    );
+  }
+
   return NextResponse.json({
     succes: valides.length,
     valides,
-    conflits: conflits.length > 0 ? conflits : undefined,
-    erreurs: erreurs.length > 0 ? erreurs : undefined,
+    conflits,
+    erreurs,
   });
 }

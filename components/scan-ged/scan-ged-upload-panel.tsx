@@ -32,6 +32,8 @@ import {
   STATUT_CLASSEMENT_ECHEC,
   STATUT_CLASSEMENT_EN_ATTENTE,
 } from "@/lib/documents/scan-ged-file-attente";
+import { MESSAGE_DOCUMENT_DEJA_CLASSE } from "@/lib/scan-ged/filtrer-documents-admin";
+import { MESSAGE_REPONSE_NON_JSON } from "@/lib/documents/orchestrer-deplacement-classement";
 import type { StatutClassementDocument } from "@/types/documents";
 import { cn } from "@/lib/utils";
 import type { ScanGedOrganisation } from "@/types/scan-ged";
@@ -270,6 +272,11 @@ export function ScanGedUploadPanel({
     fait: number;
     total: number;
   } | null>(null);
+  const [progressionValidation, setProgressionValidation] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [peutReprendreValidation, setPeutReprendreValidation] = useState(false);
   const [reessaiDocumentId, setReessaiDocumentId] = useState<string | null>(
     null,
   );
@@ -542,11 +549,20 @@ export function ScanGedUploadPanel({
       }
       setMessage("Document classé dans la GED.");
     } catch (error) {
-      setErreur(
+      const message =
         error instanceof Error
           ? error.message
-          : "Impossible de valider le document.",
-      );
+          : "Impossible de valider le document.";
+      if (message === MESSAGE_DOCUMENT_DEJA_CLASSE) {
+        setLignes((courantes) =>
+          courantes.filter((item) => item.documentId !== ligne.documentId),
+        );
+        await chargerDonnees();
+      } else if (message === MESSAGE_REPONSE_NON_JSON) {
+        setPeutReprendreValidation(true);
+        await chargerDonnees();
+      }
+      setErreur(message);
     } finally {
       setValidationDocumentId(null);
     }
@@ -594,27 +610,64 @@ export function ScanGedUploadPanel({
     setValidationEnCours(true);
     setErreur(null);
     setMessage(null);
+    setProgressionValidation({ fait: 0, total: aValider.length });
 
     try {
       const resultat = await validerTousScanGedDocuments(
         aValider.map(ligneVersParamsValidation),
+        {
+          onProgress: (progress) => setProgressionValidation(progress),
+        },
       );
 
-      const idsValides = new Set(aValider.map((ligne) => ligne.documentId));
+      const idsARetirer = new Set([
+        ...resultat.valides,
+        ...resultat.conflits,
+      ]);
       setLignes((courantes) =>
-        courantes.filter((ligne) => !idsValides.has(ligne.documentId)),
+        courantes.filter((ligne) => !idsARetirer.has(ligne.documentId)),
       );
-      setMessage(`${resultat.succes} document(s) classé(s) dans la GED.`);
 
-      if (resultat.erreurs?.length) {
-        setErreur(resultat.erreurs.join(" | "));
+      const nbRetires = idsARetirer.size;
+      const nbErreursDocs = resultat.erreurs.length;
+      const nbErreursLots = resultat.erreursLots.length;
+
+      setMessage(
+        `${resultat.succes} document(s) classé(s)${
+          resultat.conflits.length > 0
+            ? `, ${resultat.conflits.length} déjà classé(s)`
+            : ""
+        } (${nbRetires} retiré(s) de la liste).`,
+      );
+
+      const partiesErreur: string[] = [];
+      if (nbErreursDocs > 0) {
+        partiesErreur.push(
+          resultat.erreurs
+            .map((e) =>
+              e.documentId ? `${e.documentId} : ${e.message}` : e.message,
+            )
+            .join(" | "),
+        );
+      }
+      if (nbErreursLots > 0) {
+        partiesErreur.push(resultat.erreursLots.join(" | "));
+      }
+      if (partiesErreur.length > 0) {
+        setErreur(partiesErreur.join(" | "));
+        setPeutReprendreValidation(true);
+      } else {
+        setPeutReprendreValidation(false);
       }
     } catch (error) {
       setErreur(
         error instanceof Error ? error.message : "Impossible de tout valider.",
       );
+      setPeutReprendreValidation(true);
     } finally {
       setValidationEnCours(false);
+      setProgressionValidation(null);
+      await chargerDonnees();
     }
   }
 
@@ -738,6 +791,38 @@ export function ScanGedUploadPanel({
         </div>
       )}
 
+      {progressionValidation && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-text-strong">
+              Validation en cours…
+            </p>
+            <p className="text-sm text-text-muted">
+              {progressionValidation.fait}/{progressionValidation.total}{" "}
+              document
+              {progressionValidation.total > 1 ? "s" : ""}
+            </p>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-page">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-300"
+              style={{
+                width: `${
+                  progressionValidation.total > 0
+                    ? Math.min(
+                        100,
+                        (progressionValidation.fait /
+                          progressionValidation.total) *
+                          100,
+                      )
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {erreur && (
         <div className="rounded-xl border border-[#FECACA] bg-[#FEF2F2] p-4">
           <p className="text-sm text-[#991B1B]">{erreur}</p>
@@ -761,11 +846,17 @@ export function ScanGedUploadPanel({
             type="button"
             onClick={() => void handleValiderTout()}
             disabled={
-              validationEnCours || importEnCours || suppressionDocumentId !== null
+              validationEnCours ||
+              importEnCours ||
+              suppressionDocumentId !== null
             }
             className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
-            {validationEnCours ? "Validation…" : "Tout valider"}
+            {validationEnCours
+              ? "Validation…"
+              : peutReprendreValidation
+                ? "Reprendre la validation"
+                : "Tout valider"}
           </button>
         )}
       </div>

@@ -1,4 +1,8 @@
 import { createClient } from "@/lib/supabase/client";
+import {
+  MESSAGE_REPONSE_NON_JSON,
+  TAILLE_LOT_VALIDATION_CLIENT,
+} from "@/lib/documents/orchestrer-deplacement-classement";
 import type {
   DocumentNonClasse,
   GedDossier,
@@ -8,6 +12,20 @@ import type { ScanGedOrganisationContext } from "@/types/scan-ged";
 
 const CONCURRENCE_UPLOAD = 3;
 const BUCKET = "documents";
+
+export interface ErreurValidationDocumentClient {
+  documentId: string;
+  message: string;
+}
+
+export interface ResultatValiderToutClient {
+  succes: number;
+  valides: string[];
+  conflits: string[];
+  erreurs: ErreurValidationDocumentClient[];
+  /** Erreurs de lot entier (timeout / non-JSON / HTTP) — le lot suivant a quand même été tenté. */
+  erreursLots: string[];
+}
 
 export async function fetchScanGedContext(
   organisationId: string,
@@ -324,6 +342,26 @@ export async function reessayerClassementScanGedDocument(params: {
   return document;
 }
 
+async function lireJsonReponse<T extends { error?: string }>(
+  response: Response,
+  messageDefaut: string,
+): Promise<T> {
+  const texte = await response.text();
+  let data: T;
+
+  try {
+    data = JSON.parse(texte) as T;
+  } catch {
+    throw new Error(MESSAGE_REPONSE_NON_JSON);
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error?.trim() || messageDefaut);
+  }
+
+  return data;
+}
+
 export async function validerScanGedDocument(params: {
   documentId: string;
   gedDossierId: string | null;
@@ -345,15 +383,10 @@ export async function validerScanGedDocument(params: {
     },
   );
 
-  const data = (await response.json()) as DocumentNonClasse & {
-    error?: string;
-  };
-
-  if (!response.ok) {
-    throw new Error(data.error ?? "Impossible de valider le document.");
-  }
-
-  return data;
+  return lireJsonReponse<DocumentNonClasse & { error?: string }>(
+    response,
+    "Impossible de valider le document.",
+  );
 }
 
 export async function supprimerScanGedDocument(
@@ -398,32 +431,138 @@ export async function proposerDossierScanGedDocument(params: {
   return data;
 }
 
-export async function validerTousScanGedDocuments(
-  documents: {
-    documentId: string;
-    gedDossierId: string | null;
-    nouveauCheminDossier: string[] | null;
-    majeurId: string;
-    nom: string;
-  }[],
-): Promise<{ succes: number; erreurs?: string[] }> {
+type DocumentValidationParams = {
+  documentId: string;
+  gedDossierId: string | null;
+  nouveauCheminDossier: string[] | null;
+  majeurId: string;
+  nom: string;
+};
+
+async function validerLotScanGedDocuments(
+  documents: DocumentValidationParams[],
+): Promise<ResultatValiderToutClient> {
   const response = await fetch("/api/scan-ged/documents/valider-tout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documents }),
   });
 
-  const data = (await response.json()) as {
+  const texte = await response.text();
+  let data: {
     succes?: number;
-    erreurs?: string[];
+    valides?: string[];
+    conflits?: string[];
+    erreurs?: ErreurValidationDocumentClient[] | string[];
     error?: string;
   };
 
-  if (!response.ok) {
-    throw new Error(data.error ?? "Impossible de tout valider.");
+  try {
+    data = JSON.parse(texte) as typeof data;
+  } catch {
+    throw new Error(MESSAGE_REPONSE_NON_JSON);
   }
 
-  return { succes: data.succes ?? 0, erreurs: data.erreurs };
+  if (!response.ok) {
+    // Lot partiellement documenté dans le JSON (ex. trop de docs, tous en erreur)
+    const erreursNormalisees = normaliserErreursLot(data.erreurs);
+    if (
+      (data.valides?.length ?? 0) > 0 ||
+      (data.conflits?.length ?? 0) > 0 ||
+      erreursNormalisees.length > 0
+    ) {
+      return {
+        succes: data.succes ?? data.valides?.length ?? 0,
+        valides: data.valides ?? [],
+        conflits: data.conflits ?? [],
+        erreurs: erreursNormalisees,
+        erreursLots: data.error ? [data.error] : [],
+      };
+    }
+    throw new Error(data.error?.trim() || "Impossible de tout valider.");
+  }
+
+  return {
+    succes: data.succes ?? data.valides?.length ?? 0,
+    valides: data.valides ?? [],
+    conflits: data.conflits ?? [],
+    erreurs: normaliserErreursLot(data.erreurs),
+    erreursLots: [],
+  };
+}
+
+function normaliserErreursLot(
+  erreurs: ErreurValidationDocumentClient[] | string[] | undefined,
+): ErreurValidationDocumentClient[] {
+  if (!erreurs?.length) {
+    return [];
+  }
+
+  return erreurs.map((erreur) => {
+    if (typeof erreur === "string") {
+      const sep = erreur.indexOf(" : ");
+      if (sep > 0) {
+        return {
+          documentId: erreur.slice(0, sep),
+          message: erreur.slice(sep + 3),
+        };
+      }
+      return { documentId: "", message: erreur };
+    }
+    return erreur;
+  });
+}
+
+/**
+ * Valide par lots de 10 (séquentiel). Un lot en erreur n'arrête pas les suivants.
+ */
+export async function validerTousScanGedDocuments(
+  documents: DocumentValidationParams[],
+  options?: {
+    onProgress?: (progress: { fait: number; total: number }) => void;
+    tailleLot?: number;
+  },
+): Promise<ResultatValiderToutClient> {
+  const tailleLot = Math.max(
+    1,
+    options?.tailleLot ?? TAILLE_LOT_VALIDATION_CLIENT,
+  );
+  const total = documents.length;
+  const valides: string[] = [];
+  const conflits: string[] = [];
+  const erreurs: ErreurValidationDocumentClient[] = [];
+  const erreursLots: string[] = [];
+  let fait = 0;
+
+  options?.onProgress?.({ fait: 0, total: Math.max(total, 1) });
+
+  for (let debut = 0; debut < documents.length; debut += tailleLot) {
+    const lot = documents.slice(debut, debut + tailleLot);
+
+    try {
+      const resultat = await validerLotScanGedDocuments(lot);
+      valides.push(...resultat.valides);
+      conflits.push(...resultat.conflits);
+      erreurs.push(...resultat.erreurs);
+      erreursLots.push(...resultat.erreursLots);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Impossible de tout valider.";
+      erreursLots.push(message);
+      // Les docs de ce lot restent potentiellement en attente ; on continue.
+    }
+
+    fait = Math.min(debut + lot.length, total);
+    options?.onProgress?.({ fait, total: Math.max(total, 1) });
+  }
+
+  return {
+    succes: valides.length,
+    valides,
+    conflits,
+    erreurs,
+    erreursLots,
+  };
 }
 
 export type { DocumentNonClasse, GedDossier, MajeurActif };
