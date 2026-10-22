@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { enregistrerDocumentsInboxDepuisStoragePaths } from "@/lib/documents/non-classes-server";
-import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
-import { requireScanGedAccess } from "@/lib/scan-ged/auth";
+import { normaliserContenuSha256 } from "@/lib/documents/scan-ged-empreintes";
+import { requireScanGedOrganisationAccess } from "@/lib/scan-ged/auth";
 
 export const runtime = "nodejs";
 
 interface ClassifierBody {
   storagePaths?: string[];
+  /** Empreintes indexées par storage_path (hash client, validé serveur). */
+  empreintesParStoragePath?: Record<string, string | null | undefined>;
 }
 
 /**
@@ -19,25 +21,12 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ organisationId: string }> },
 ) {
-  const admin = await requireScanGedAccess();
-  if (!admin) {
-    return NextResponse.json({ error: "Action non autorisée." }, { status: 403 });
-  }
-
   const { organisationId } = await params;
-
-  if (!organisationId) {
+  const acces = await requireScanGedOrganisationAccess(organisationId);
+  if (!acces.ok) {
     return NextResponse.json(
-      { error: "Organisation requise." },
-      { status: 400 },
-    );
-  }
-
-  const organisationIds = await getNonDemoOrganisationIds();
-  if (!organisationIds.includes(organisationId)) {
-    return NextResponse.json(
-      { error: "Organisation introuvable." },
-      { status: 404 },
+      { error: acces.error },
+      { status: acces.status },
     );
   }
 
@@ -62,11 +51,18 @@ export async function POST(
     );
   }
 
+  const empreintesParStoragePath: Record<string, string | null> = {};
+  const brut = body.empreintesParStoragePath ?? {};
+  for (const path of storagePaths) {
+    empreintesParStoragePath[path] = normaliserContenuSha256(brut[path]);
+  }
+
   const { documents, erreurs } =
     await enregistrerDocumentsInboxDepuisStoragePaths({
       storagePaths,
       organisationId,
-      scanAdminUserId: admin.id,
+      scanAdminUserId: acces.admin.id,
+      empreintesParStoragePath,
     });
 
   if (documents.length === 0) {

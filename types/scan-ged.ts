@@ -25,4 +25,6 @@ export interface ScanGedOrganisationContext {
   adminCourantId: string | null;
   /** Admins ayant scanné au moins un document de la liste. */
   scanAdmins: ScanGedAdminInfo[];
+  /** Documents Scan GED (statut_classement NOT NULL) sans contenu_sha256. */
+  documentsSansEmpreinte: number;
 }

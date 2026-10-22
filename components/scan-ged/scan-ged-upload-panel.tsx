@@ -16,6 +16,7 @@ import {
   formatSegmentsCheminBreadcrumb,
 } from "@/lib/documents/ged-dossier-utils";
 import {
+  calculerEmpreintesLotScanGed,
   classerDocumentsRestantsScanGed,
   fetchDossiersProtege,
   fetchScanGedContext,
@@ -26,10 +27,18 @@ import {
   uploadScanGedDocuments,
   validerScanGedDocument,
   validerTousScanGedDocuments,
+  verifierEmpreintesScanGed,
   type DocumentNonClasse,
   type GedDossier,
   type MajeurActif,
 } from "@/lib/scan-ged/client";
+import { calculerEmpreintesFichiersSequentiel } from "@/lib/documents/scan-ged-empreintes-client";
+import {
+  detecterDoublonsInternesLot,
+  selectionnerFichiersApresConfirmation,
+  type DoublonConnuScanGed,
+  type FichierAvecEmpreinte,
+} from "@/lib/documents/scan-ged-empreintes";
 import {
   STATUT_CLASSEMENT_CLASSE,
   STATUT_CLASSEMENT_ECHEC,
@@ -305,6 +314,27 @@ export function ScanGedUploadPanel({
   );
   const [classementBoucleEnCours, setClassementBoucleEnCours] = useState(false);
   const arreterClassementRef = useRef(false);
+  const [documentsSansEmpreinte, setDocumentsSansEmpreinte] = useState(0);
+  const [progressionVerification, setProgressionVerification] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [progressionEmpreintes, setProgressionEmpreintes] = useState<{
+    fait: number;
+    total: number;
+  } | null>(null);
+  const [calculEmpreintesEnCours, setCalculEmpreintesEnCours] = useState(false);
+  const arreterEmpreintesRef = useRef(false);
+  const [confirmationDoublons, setConfirmationDoublons] = useState<{
+    fichiers: File[];
+    empreintes: FichierAvecEmpreinte[];
+    connus: DoublonConnuScanGed[];
+    nbDoublonsConnus: number;
+    doublonsInternes: ReturnType<
+      typeof detecterDoublonsInternesLot
+    >["doublonsInternes"];
+  } | null>(null);
+  const [listeDoublonsOuverte, setListeDoublonsOuverte] = useState(false);
 
   const assurerDossiersProtege = useCallback(
     async (majeurId: string): Promise<GedDossier[]> => {
@@ -344,6 +374,7 @@ export function ScanGedUploadPanel({
     try {
       const contexte = await fetchScanGedContext(organisation.organisationId);
       setMajeurs(contexte.majeurs);
+      setDocumentsSansEmpreinte(contexte.documentsSansEmpreinte ?? 0);
       const nouvellesLignes = contexte.documents.map(documentVersLigne);
       setLignes(nouvellesLignes);
 
@@ -460,19 +491,12 @@ export function ScanGedUploadPanel({
     arreterClassementRef.current = true;
   }
 
-  async function traiterFichiers(fichiers: FileList | File[]) {
-    const liste = Array.from(fichiers).filter((fichier) => {
-      const type = fichier.type;
-      const nom = fichier.name.toLowerCase();
-      return (
-        type.startsWith("image/") ||
-        type === "application/pdf" ||
-        nom.endsWith(".pdf")
-      );
-    });
-
-    if (liste.length === 0) {
-      setErreur("Formats acceptés : PDF et images.");
+  async function lancerUploadApresConfirmation(params: {
+    fichiers: File[];
+    empreintes: (string | null)[];
+  }) {
+    if (params.fichiers.length === 0) {
+      setMessage("Aucun fichier à envoyer.");
       return;
     }
 
@@ -481,13 +505,14 @@ export function ScanGedUploadPanel({
     arreterClassementRef.current = false;
     setErreur(null);
     setMessage(null);
-    setProgressionClassement({ fait: 0, total: liste.length });
+    setProgressionClassement({ fait: 0, total: params.fichiers.length });
 
     try {
       const resultat = await uploadScanGedDocuments(
         organisation.organisationId,
-        liste,
+        params.fichiers,
         {
+          empreintes: params.empreintes,
           onProgress: (progress) => setProgressionClassement(progress),
           devraitArreter: () => arreterClassementRef.current,
         },
@@ -525,6 +550,157 @@ export function ScanGedUploadPanel({
       setClassementBoucleEnCours(false);
       setProgressionClassement(null);
       arreterClassementRef.current = false;
+    }
+  }
+
+  async function traiterFichiers(fichiers: FileList | File[]) {
+    const liste = Array.from(fichiers).filter((fichier) => {
+      const type = fichier.type;
+      const nom = fichier.name.toLowerCase();
+      return (
+        type.startsWith("image/") ||
+        type === "application/pdf" ||
+        nom.endsWith(".pdf")
+      );
+    });
+
+    if (liste.length === 0) {
+      setErreur("Formats acceptés : PDF et images.");
+      return;
+    }
+
+    if (confirmationDoublons || importEnCours || classementBoucleEnCours) {
+      return;
+    }
+
+    setErreur(null);
+    setMessage(null);
+    setProgressionVerification({ fait: 0, total: liste.length });
+
+    try {
+      const empreintes = await calculerEmpreintesFichiersSequentiel(
+        liste,
+        (progress) => setProgressionVerification(progress),
+      );
+
+      const { doublonsInternes } = detecterDoublonsInternesLot(empreintes);
+      const hashesAVerifier = empreintes
+        .map((item) => item.contenuSha256)
+        .filter((hash): hash is string => Boolean(hash));
+
+      const connus = await verifierEmpreintesScanGed(
+        organisation.organisationId,
+        hashesAVerifier,
+      );
+      const hashesConnus = new Set(connus.map((item) => item.contenuSha256));
+      const nbDoublonsConnus = empreintes.filter(
+        (item) =>
+          item.contenuSha256 && hashesConnus.has(item.contenuSha256),
+      ).length;
+
+      setProgressionVerification(null);
+
+      if (nbDoublonsConnus === 0 && doublonsInternes.length === 0) {
+        await lancerUploadApresConfirmation({
+          fichiers: liste,
+          empreintes: empreintes.map((item) => item.contenuSha256),
+        });
+        return;
+      }
+
+      setListeDoublonsOuverte(false);
+      setConfirmationDoublons({
+        fichiers: liste,
+        empreintes,
+        connus,
+        nbDoublonsConnus,
+        doublonsInternes,
+      });
+    } catch (error) {
+      setProgressionVerification(null);
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de vérifier les fichiers.",
+      );
+    }
+  }
+
+  async function confirmerEnvoiDoublons(
+    choix: "nouveaux" | "tous" | "annuler",
+  ) {
+    const confirmation = confirmationDoublons;
+    setConfirmationDoublons(null);
+    if (!confirmation || choix === "annuler") {
+      setMessage(choix === "annuler" ? "Envoi annulé." : null);
+      return;
+    }
+
+    const hashesConnus = new Set(
+      confirmation.connus.map((item) => item.contenuSha256),
+    );
+    const indexes = selectionnerFichiersApresConfirmation({
+      choix,
+      fichiers: confirmation.empreintes,
+      hashesConnus,
+    });
+
+    const fichiers = indexes.map((index) => confirmation.fichiers[index]!);
+    const empreintes = indexes.map(
+      (index) => confirmation.empreintes[index]!.contenuSha256,
+    );
+
+    await lancerUploadApresConfirmation({ fichiers, empreintes });
+  }
+
+  async function handleCalculerEmpreintes() {
+    if (calculEmpreintesEnCours || documentsSansEmpreinte === 0) {
+      return;
+    }
+
+    setCalculEmpreintesEnCours(true);
+    arreterEmpreintesRef.current = false;
+    setErreur(null);
+    setMessage(null);
+    setProgressionEmpreintes({
+      fait: 0,
+      total: Math.max(documentsSansEmpreinte, 1),
+    });
+
+    try {
+      const resultat = await calculerEmpreintesLotScanGed(
+        organisation.organisationId,
+        {
+          onProgress: (progress) =>
+            setProgressionEmpreintes({
+              fait: progress.fait,
+              total: progress.total,
+            }),
+          devraitArreter: () => arreterEmpreintesRef.current,
+        },
+      );
+      await chargerDonnees();
+
+      if (resultat.arrete) {
+        setMessage(
+          `Calcul des empreintes arrêté. ${resultat.fait} document${resultat.fait > 1 ? "s" : ""} traité${resultat.fait > 1 ? "s" : ""}.`,
+        );
+      } else {
+        setMessage(
+          `Empreintes calculées : ${resultat.succes} succès${resultat.erreurs > 0 ? `, ${resultat.erreurs} erreur${resultat.erreurs > 1 ? "s" : ""}` : ""}.`,
+        );
+      }
+    } catch (error) {
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de calculer les empreintes.",
+      );
+      await chargerDonnees();
+    } finally {
+      setCalculEmpreintesEnCours(false);
+      setProgressionEmpreintes(null);
+      arreterEmpreintesRef.current = false;
     }
   }
 
@@ -846,6 +1022,84 @@ export function ScanGedUploadPanel({
         </button>
       </div>
 
+      {!chargement && documentsSansEmpreinte > 0 && (
+        <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-text-strong">
+              {documentsSansEmpreinte} document
+              {documentsSansEmpreinte > 1 ? "s" : ""} du Scan GED sans empreinte
+            </p>
+            <p className="mt-0.5 text-xs text-text-muted">
+              Sans empreinte, ces documents ne peuvent pas être détectés comme
+              doublons.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleCalculerEmpreintes()}
+            disabled={
+              calculEmpreintesEnCours ||
+              classementBoucleEnCours ||
+              importEnCours ||
+              validationEnCours
+            }
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-strong transition-colors hover:bg-page disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {calculEmpreintesEnCours ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Calcul…
+              </>
+            ) : (
+              "Calculer les empreintes des documents du Scan GED"
+            )}
+          </button>
+        </div>
+      )}
+
+      {progressionEmpreintes && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-medium text-text-strong">
+              Calcul des empreintes…
+            </p>
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-text-muted">
+                {progressionEmpreintes.fait}/{progressionEmpreintes.total}
+              </p>
+              {calculEmpreintesEnCours && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    arreterEmpreintesRef.current = true;
+                  }}
+                  className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-text-strong transition-colors hover:bg-page"
+                >
+                  Arrêter
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-page">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-300"
+              style={{
+                width: `${
+                  progressionEmpreintes.total > 0
+                    ? Math.min(
+                        100,
+                        (progressionEmpreintes.fait /
+                          progressionEmpreintes.total) *
+                          100,
+                      )
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       {!chargement && (nbEnAttenteTri > 0 || documentsEnEchec.length > 0) && (
         <div className="flex flex-col gap-3 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] p-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-sm font-medium text-[#92400E]">
@@ -929,7 +1183,13 @@ export function ScanGedUploadPanel({
         </p>
         <button
           type="button"
-          disabled={importEnCours || classementBoucleEnCours}
+          disabled={
+            importEnCours ||
+            classementBoucleEnCours ||
+            Boolean(progressionVerification) ||
+            Boolean(confirmationDoublons) ||
+            calculEmpreintesEnCours
+          }
           onClick={() => inputRef.current?.click()}
           className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -938,11 +1198,46 @@ export function ScanGedUploadPanel({
               <Loader2 className="h-4 w-4 animate-spin" />
               Import en cours…
             </>
+          ) : progressionVerification ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Vérification…
+            </>
           ) : (
             "Sélectionner des fichiers"
           )}
         </button>
       </div>
+
+      {progressionVerification && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-text-strong">
+              Vérification des fichiers…
+            </p>
+            <p className="text-sm text-text-muted">
+              {progressionVerification.fait}/{progressionVerification.total}
+            </p>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-page">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-300"
+              style={{
+                width: `${
+                  progressionVerification.total > 0
+                    ? Math.min(
+                        100,
+                        (progressionVerification.fait /
+                          progressionVerification.total) *
+                          100,
+                      )
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {progressionClassement && (
         <div className="rounded-xl border border-border bg-card p-4">
@@ -1366,6 +1661,110 @@ export function ScanGedUploadPanel({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {confirmationDoublons && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="scan-ged-doublons-titre"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-lg"
+          >
+            <h2
+              id="scan-ged-doublons-titre"
+              className="text-base font-semibold text-text-strong"
+            >
+              {confirmationDoublons.nbDoublonsConnus > 0
+                ? `${confirmationDoublons.nbDoublonsConnus} fichier${confirmationDoublons.nbDoublonsConnus > 1 ? "s" : ""} sur ${confirmationDoublons.fichiers.length} ${confirmationDoublons.nbDoublonsConnus > 1 ? "ont" : "a"} déjà été envoyé${confirmationDoublons.nbDoublonsConnus > 1 ? "s" : ""}`
+                : "Fichiers en double dans ce lot"}
+            </h2>
+            {confirmationDoublons.doublonsInternes.length > 0 && (
+              <p className="mt-2 text-sm text-text-muted">
+                {confirmationDoublons.doublonsInternes.length} doublon
+                {confirmationDoublons.doublonsInternes.length > 1 ? "s" : ""}{" "}
+                interne
+                {confirmationDoublons.doublonsInternes.length > 1 ? "s" : ""}{" "}
+                au lot : un seul exemplaire sera conservé par défaut.
+              </p>
+            )}
+            <p className="mt-2 text-xs text-text-muted">
+              La vérification couvre les documents envoyés via le Scan GED.
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setListeDoublonsOuverte((ouvert) => !ouvert)}
+              className="mt-3 text-sm font-medium text-accent hover:text-accent-hover"
+            >
+              {listeDoublonsOuverte
+                ? "Masquer la liste"
+                : "Voir la liste des doublons"}
+            </button>
+
+            {listeDoublonsOuverte && (
+              <ul className="mt-3 max-h-56 space-y-2 overflow-y-auto rounded-lg border border-border bg-page p-3">
+                {confirmationDoublons.empreintes.map((empreinte) => {
+                  if (!empreinte.contenuSha256) {
+                    return null;
+                  }
+                  const connu = confirmationDoublons.connus.find(
+                    (item) =>
+                      item.contenuSha256 === empreinte.contenuSha256,
+                  );
+                  const interne = confirmationDoublons.doublonsInternes.find(
+                    (item) => item.index === empreinte.index,
+                  );
+                  if (!connu && !interne) {
+                    return null;
+                  }
+                  const dateAjout = connu
+                    ? formaterDateAjoutDocument(connu.createdAt)
+                    : null;
+                  return (
+                    <li
+                      key={`${empreinte.index}-${empreinte.nom}`}
+                      className="text-sm text-text-strong"
+                    >
+                      <span className="font-medium">{empreinte.nom}</span>
+                      <span className="mt-0.5 block text-xs text-text-muted">
+                        {connu
+                          ? `${connu.emplacement.libelle} — ${connu.nomOriginal}${
+                              dateAjout ? ` · ${dateAjout}` : ""
+                            }`
+                          : `Doublon dans ce lot (conservé : ${interne?.nomConserve ?? "—"})`}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="mt-5 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => void confirmerEnvoiDoublons("nouveaux")}
+                className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+              >
+                Envoyer seulement les nouveaux
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmerEnvoiDoublons("tous")}
+                className="inline-flex w-full items-center justify-center rounded-lg border border-border px-4 py-2.5 text-sm font-medium text-text-strong transition-colors hover:bg-page"
+              >
+                Tout envoyer quand même
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmerEnvoiDoublons("annuler")}
+                className="inline-flex w-full items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-text-muted transition-colors hover:text-text-strong"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

@@ -33,6 +33,8 @@ export interface Document {
   nom_original: string;
   nom_fichier?: string;
   taille_bytes: number;
+  /** SHA-256 hex minuscule (64 car.) du fichier déposé via Scan GED. */
+  contenu_sha256?: string | null;
   date_document?: string | null;
   proposition_categorie_id?: string | null;
   proposition_majeur_id?: string | null;

@@ -39,6 +39,7 @@ import {
   messageErreurCopieStorage,
   orchestrerDeplacementClassement,
 } from "@/lib/documents/orchestrer-deplacement-classement";
+import { normaliserContenuSha256 } from "@/lib/documents/scan-ged-empreintes";
 import { createAdminClient } from "@/lib/supabase/server";
 import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -57,6 +58,8 @@ interface EntreeTeleversee {
   typeDocument: string;
   bytes: Uint8Array;
   storagePath: string;
+  /** Empreinte du fichier déposé (peut être partagée par tous les segments d'un PDF découpé). */
+  contenuSha256?: string | null;
 }
 
 function dossiersVersProposition(
@@ -144,6 +147,8 @@ async function insererDocumentEnAttenteClassement(
   index: number,
   scanAdminUserId: string | null,
 ): Promise<DocumentNonClasse> {
+  const contenuSha256 = normaliserContenuSha256(entree.contenuSha256);
+
   const { data, error } = await adminClient
     .from("documents")
     .insert({
@@ -155,6 +160,7 @@ async function insererDocumentEnAttenteClassement(
       nom_original: entree.nom,
       nom_fichier: `${Date.now()}_${index}_${entree.nom}`,
       taille_bytes: entree.bytes.byteLength,
+      contenu_sha256: contenuSha256,
       statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
       erreur_classement: null,
       scan_admin_user_id: scanAdminUserId,
@@ -279,11 +285,17 @@ export async function enregistrerDocumentsInboxDepuisStoragePaths(params: {
   organisationId: string;
   /** Admin Scan GED connecté (null = ne pas renseigner, ex. matima-app). */
   scanAdminUserId?: string | null;
+  /**
+   * Empreintes du fichier déposé, indexées par storage_path d'upload.
+   * Propagées à tous les segments issus d'un découpage PDF.
+   */
+  empreintesParStoragePath?: Record<string, string | null | undefined>;
 }): Promise<{ documents: DocumentNonClasse[]; erreurs: string[] }> {
   const adminClient = createAdminClient();
   const erreurs: string[] = [];
   const entrees: EntreeTeleversee[] = [];
   const scanAdminUserId = params.scanAdminUserId ?? null;
+  const empreintes = params.empreintesParStoragePath ?? {};
 
   for (const storagePath of params.storagePaths) {
     try {
@@ -292,7 +304,13 @@ export async function enregistrerDocumentsInboxDepuisStoragePaths(params: {
         params.organisationId,
         adminClient,
       );
-      entrees.push(...preparees);
+      const hashOriginal = normaliserContenuSha256(empreintes[storagePath]);
+      entrees.push(
+        ...preparees.map((entree) => ({
+          ...entree,
+          contenuSha256: hashOriginal,
+        })),
+      );
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Erreur de préparation.";

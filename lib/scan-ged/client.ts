@@ -3,6 +3,11 @@ import {
   MESSAGE_REPONSE_NON_JSON,
   TAILLE_LOT_VALIDATION_CLIENT,
 } from "@/lib/documents/orchestrer-deplacement-classement";
+import {
+  MAX_HASH_PAR_APPEL_VERIFICATION,
+  decouperEnPaquets,
+  type DoublonConnuScanGed,
+} from "@/lib/documents/scan-ged-empreintes";
 import { bouclerTraitementLotsClassement } from "@/lib/documents/scan-ged-file-attente";
 import { avecWakeLockPendantBoucle } from "@/lib/documents/scan-ged-wake-lock";
 import type {
@@ -134,6 +139,133 @@ async function uploaderFichierVersStorage(
   return storagePath;
 }
 
+export async function verifierEmpreintesScanGed(
+  organisationId: string,
+  hashes: string[],
+): Promise<DoublonConnuScanGed[]> {
+  const uniques = [...new Set(hashes.filter(Boolean))];
+  if (uniques.length === 0) {
+    return [];
+  }
+
+  const connus: DoublonConnuScanGed[] = [];
+
+  for (const paquet of decouperEnPaquets(
+    uniques,
+    MAX_HASH_PAR_APPEL_VERIFICATION,
+  )) {
+    const response = await fetch(
+      `/api/scan-ged/${organisationId}/verifier-empreintes`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hashes: paquet }),
+      },
+    );
+
+    const data = (await response.json()) as {
+      connus?: DoublonConnuScanGed[];
+      error?: string;
+    };
+
+    if (!response.ok) {
+      throw new Error(data.error ?? "Impossible de vérifier les fichiers.");
+    }
+
+    connus.push(...(data.connus ?? []));
+  }
+
+  return connus;
+}
+
+export async function calculerEmpreintesLotScanGed(
+  organisationId: string,
+  options?: {
+    taille?: number;
+    onProgress?: (progress: {
+      fait: number;
+      total: number;
+      restant: number;
+    }) => void;
+    devraitArreter?: () => boolean;
+  },
+): Promise<{
+  fait: number;
+  succes: number;
+  erreurs: number;
+  restant: number;
+  arrete: boolean;
+}> {
+  let fait = 0;
+  let succes = 0;
+  let erreurs = 0;
+  let restant = 1;
+  let arrete = false;
+  let gardeFou = 0;
+  let totalInitial: number | null = null;
+
+  while (restant > 0 && gardeFou < 10_000) {
+    if (options?.devraitArreter?.()) {
+      arrete = true;
+      break;
+    }
+
+    gardeFou += 1;
+    const response = await fetch(
+      `/api/scan-ged/${organisationId}/calculer-empreintes`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taille: options?.taille }),
+      },
+    );
+
+    const data = (await response.json()) as {
+      traites?: number;
+      succes?: number;
+      erreurs?: number;
+      restant?: number;
+      arreteBudget?: boolean;
+      error?: string;
+    };
+
+    if (!response.ok) {
+      throw new Error(data.error ?? "Impossible de calculer les empreintes.");
+    }
+
+    const traitesLot = data.traites ?? 0;
+    const succesLot = data.succes ?? 0;
+    const erreursLot = data.erreurs ?? 0;
+    fait += traitesLot;
+    succes += succesLot;
+    erreurs += erreursLot;
+    restant = data.restant ?? 0;
+
+    if (totalInitial === null) {
+      totalInitial = fait + restant;
+    }
+
+    options?.onProgress?.({
+      fait,
+      total: Math.max(totalInitial, fait + restant, 1),
+      restant,
+    });
+
+    if (traitesLot === 0) {
+      break;
+    }
+
+    // Fichiers introuvables restent sans hash : éviter une boucle infinie.
+    if (succesLot === 0 && erreursLot > 0) {
+      break;
+    }
+
+    // Budget serveur atteint : le client relance le lot suivant sauf Arrêter.
+  }
+
+  return { fait, succes, erreurs, restant, arrete };
+}
+
 async function rollbackStoragePaths(
   organisationId: string,
   storagePaths: string[],
@@ -160,6 +292,8 @@ export interface OptionsBoucleClassement {
   devraitArreter?: () => boolean;
   totalInitial?: number;
   documentIds?: string[];
+  /** Empreintes alignées sur `fichiers` (même index). */
+  empreintes?: (string | null)[];
 }
 
 /**
@@ -214,7 +348,9 @@ export async function uploadScanGedDocuments(
   arrete?: boolean;
 }> {
   const storagePaths: string[] = [];
+  const empreintesParStoragePath: Record<string, string | null> = {};
   const erreursUpload: string[] = [];
+  const empreintes = options?.empreintes ?? [];
 
   for (let debut = 0; debut < fichiers.length; debut += CONCURRENCE_UPLOAD) {
     const lot = fichiers.slice(debut, debut + CONCURRENCE_UPLOAD);
@@ -225,8 +361,12 @@ export async function uploadScanGedDocuments(
 
     resultatsLot.forEach((resultat, index) => {
       const fichier = lot[index]!;
+      const indexGlobal = debut + index;
       if (resultat.status === "fulfilled") {
-        storagePaths.push(resultat.value);
+        const storagePath = resultat.value;
+        storagePaths.push(storagePath);
+        const hash = empreintes[indexGlobal] ?? null;
+        empreintesParStoragePath[storagePath] = hash;
       } else {
         const message =
           resultat.reason instanceof Error
@@ -251,7 +391,7 @@ export async function uploadScanGedDocuments(
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ storagePaths }),
+        body: JSON.stringify({ storagePaths, empreintesParStoragePath }),
       },
     );
 

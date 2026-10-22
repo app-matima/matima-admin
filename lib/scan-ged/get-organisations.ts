@@ -1,6 +1,7 @@
 import { createAdminClient } from "@/lib/supabase/server";
 import { chargerToutesLesLignes } from "@/lib/supabase/charger-toutes-les-lignes";
 import { getNonDemoOrganisationIds } from "@/lib/organisations/get-non-demo-organisation-ids";
+import { compterDocumentsScanGedSansEmpreinte } from "@/lib/documents/scan-ged-empreintes-server";
 import { filtrerDocumentsPourAdmin } from "@/lib/scan-ged/filtrer-documents-admin";
 import {
   estStatutMajeur,
@@ -115,6 +116,7 @@ export async function getScanGedOrganisationContext(
     documents: [],
     adminCourantId: options.adminUserId,
     scanAdmins: [],
+    documentsSansEmpreinte: 0,
   };
 
   const supabase = createAdminClient();
@@ -125,27 +127,29 @@ export async function getScanGedOrganisationContext(
   }
 
   try {
-    const [majeursBruts, documentsBruts] = await Promise.all([
-      chargerToutesLesLignes<{
-        id: string;
-        nom: string;
-        prenom: string;
-        statut: string;
-      }>(() =>
-        supabase
-          .from("majeurs")
-          .select("id, nom, prenom, statut")
-          .eq("organisation_id", organisationId)
-          .in("statut", ["actif", "archive", "decede", "mainleve"]),
-      ),
-      chargerToutesLesLignes<DocumentNonClasse>(() =>
-        supabase
-          .from("documents")
-          .select("*")
-          .eq("organisation_id", organisationId)
-          .is("majeur_id", null),
-      ),
-    ]);
+    const [majeursBruts, documentsBruts, documentsSansEmpreinte] =
+      await Promise.all([
+        chargerToutesLesLignes<{
+          id: string;
+          nom: string;
+          prenom: string;
+          statut: string;
+        }>(() =>
+          supabase
+            .from("majeurs")
+            .select("id, nom, prenom, statut")
+            .eq("organisation_id", organisationId)
+            .in("statut", ["actif", "archive", "decede", "mainleve"]),
+        ),
+        chargerToutesLesLignes<DocumentNonClasse>(() =>
+          supabase
+            .from("documents")
+            .select("*")
+            .eq("organisation_id", organisationId)
+            .is("majeur_id", null),
+        ),
+        compterDocumentsScanGedSansEmpreinte(organisationId, supabase),
+      ]);
 
     const majeursTyped: Array<MajeurActif & { statut: StatutMajeur }> =
       majeursBruts
@@ -203,6 +207,7 @@ export async function getScanGedOrganisationContext(
       documents: documentsTries,
       adminCourantId: options.adminUserId,
       scanAdmins,
+      documentsSansEmpreinte,
     };
   } catch (error) {
     console.error("getScanGedOrganisationContext", error);
