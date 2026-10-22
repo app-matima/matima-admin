@@ -3,6 +3,8 @@ import {
   MESSAGE_REPONSE_NON_JSON,
   TAILLE_LOT_VALIDATION_CLIENT,
 } from "@/lib/documents/orchestrer-deplacement-classement";
+import { bouclerTraitementLotsClassement } from "@/lib/documents/scan-ged-file-attente";
+import { avecWakeLockPendantBoucle } from "@/lib/documents/scan-ged-wake-lock";
 import type {
   DocumentNonClasse,
   GedDossier,
@@ -151,6 +153,53 @@ async function rollbackStoragePaths(
   }
 }
 
+export interface OptionsBoucleClassement {
+  onProgress?: (progress: { fait: number; total: number }) => void;
+  tailleLot?: number;
+  /** Si true, la boucle s'arrête après le lot en cours. */
+  devraitArreter?: () => boolean;
+  totalInitial?: number;
+  documentIds?: string[];
+}
+
+/**
+ * Boucle traiter-lot jusqu'à épuisement (ou Arrêter), avec Wake Lock.
+ */
+export async function bouclerClassementScanGed(
+  organisationId: string,
+  options?: OptionsBoucleClassement,
+): Promise<{
+  documents: DocumentNonClasse[];
+  fait: number;
+  arrete: boolean;
+}> {
+  const documentsParId = new Map<string, DocumentNonClasse>();
+
+  return avecWakeLockPendantBoucle(async () => {
+    const resultat = await bouclerTraitementLotsClassement({
+      totalInitial: options?.totalInitial,
+      devraitArreter: () => options?.devraitArreter?.() === true,
+      onProgress: options?.onProgress,
+      traiterLot: async () => {
+        const lot = await traiterLotScanGed(organisationId, {
+          taille: options?.tailleLot,
+          documentIds: options?.documentIds,
+        });
+        for (const document of lot.documents) {
+          documentsParId.set(document.id, document);
+        }
+        return { traite: lot.traite, restant: lot.restant };
+      },
+    });
+
+    return {
+      documents: Array.from(documentsParId.values()),
+      fait: resultat.fait,
+      arrete: resultat.arrete,
+    };
+  });
+}
+
 /**
  * Upload chaque fichier vers Storage, enregistre en file d'attente, puis
  * traite le classement IA par paquets jusqu'à épuisement.
@@ -158,11 +207,12 @@ async function rollbackStoragePaths(
 export async function uploadScanGedDocuments(
   organisationId: string,
   fichiers: File[],
-  options?: {
-    onProgress?: (progress: { fait: number; total: number }) => void;
-    tailleLot?: number;
-  },
-): Promise<{ documents: DocumentNonClasse[]; erreurs?: string[] }> {
+  options?: OptionsBoucleClassement,
+): Promise<{
+  documents: DocumentNonClasse[];
+  erreurs?: string[];
+  arrete?: boolean;
+}> {
   const storagePaths: string[] = [];
   const erreursUpload: string[] = [];
 
@@ -194,7 +244,6 @@ export async function uploadScanGedDocuments(
   }
 
   let enregistrementReussi = false;
-  const documentsParId = new Map<string, DocumentNonClasse>();
 
   try {
     const response = await fetch(
@@ -228,35 +277,93 @@ export async function uploadScanGedDocuments(
 
     enregistrementReussi = true;
 
+    const erreursPrep = [...erreursUpload, ...(data.erreurs ?? [])];
+    const documentsParId = new Map<string, DocumentNonClasse>();
     for (const document of data.documents) {
       documentsParId.set(document.id, document);
     }
 
-    const erreursPrep = [...erreursUpload, ...(data.erreurs ?? [])];
-    const totalInitial = data.documents.length;
+    const boucle = await bouclerClassementScanGed(organisationId, {
+      onProgress: options?.onProgress,
+      tailleLot: options?.tailleLot,
+      devraitArreter: options?.devraitArreter,
+      totalInitial: data.documents.length,
+    });
+
+    for (const document of boucle.documents) {
+      documentsParId.set(document.id, document);
+    }
+
+    return {
+      documents: Array.from(documentsParId.values()),
+      erreurs: erreursPrep.length > 0 ? erreursPrep : undefined,
+      arrete: boucle.arrete,
+    };
+  } finally {
+    if (!enregistrementReussi) {
+      await rollbackStoragePaths(organisationId, storagePaths);
+    }
+  }
+}
+
+/**
+ * Reprend le classement des documents encore en file (sans nouvel upload).
+ */
+export async function classerDocumentsRestantsScanGed(
+  organisationId: string,
+  options?: OptionsBoucleClassement,
+): Promise<{ documents: DocumentNonClasse[]; fait: number; arrete: boolean }> {
+  return bouclerClassementScanGed(organisationId, options);
+}
+
+/**
+ * Relance tous les échecs (claim ciblé via documentIds).
+ * Chaque id n'est tenté qu'une fois par lancement (pas de boucle infinie sur échecs persistants).
+ */
+export async function reessayerTousEchecsClassementScanGed(
+  organisationId: string,
+  documentIds: string[],
+  options?: OptionsBoucleClassement,
+): Promise<{ documents: DocumentNonClasse[]; fait: number; arrete: boolean }> {
+  const idsRestants = new Set(documentIds.filter(Boolean));
+  if (idsRestants.size === 0) {
+    return { documents: [], fait: 0, arrete: false };
+  }
+
+  const totalInitial = options?.totalInitial ?? idsRestants.size;
+  const documentsParId = new Map<string, DocumentNonClasse>();
+
+  return avecWakeLockPendantBoucle(async () => {
     let fait = 0;
+    let arrete = false;
+    let gardeFou = 0;
 
     options?.onProgress?.({ fait: 0, total: Math.max(totalInitial, 1) });
 
-    let restant = totalInitial;
-    let gardeFou = 0;
+    while (idsRestants.size > 0 && gardeFou < 10_000) {
+      if (options?.devraitArreter?.()) {
+        arrete = true;
+        break;
+      }
 
-    while (restant > 0 && gardeFou < 10_000) {
       gardeFou += 1;
       const lot = await traiterLotScanGed(organisationId, {
         taille: options?.tailleLot,
+        documentIds: Array.from(idsRestants),
       });
 
       for (const document of lot.documents) {
         documentsParId.set(document.id, document);
+        idsRestants.delete(document.id);
+      }
+      for (const detail of lot.details) {
+        idsRestants.delete(detail.documentId);
       }
 
       fait += lot.traite;
-      restant = lot.restant;
-      const totalAffiche = Math.max(fait + restant, totalInitial);
       options?.onProgress?.({
-        fait: Math.min(fait, totalAffiche),
-        total: totalAffiche,
+        fait: Math.min(fait, totalInitial),
+        total: Math.max(totalInitial, 1),
       });
 
       if (lot.traite === 0) {
@@ -266,13 +373,10 @@ export async function uploadScanGedDocuments(
 
     return {
       documents: Array.from(documentsParId.values()),
-      erreurs: erreursPrep.length > 0 ? erreursPrep : undefined,
+      fait,
+      arrete,
     };
-  } finally {
-    if (!enregistrementReussi) {
-      await rollbackStoragePaths(organisationId, storagePaths);
-    }
-  }
+  });
 }
 
 export async function traiterLotScanGed(

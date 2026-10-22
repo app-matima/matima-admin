@@ -23,8 +23,11 @@ import { decouperPdfAuxPagesBlanches } from "@/lib/documents/split-pdf-blank-pag
 import {
   STATUT_CLASSEMENT_ECHEC,
   STATUT_CLASSEMENT_EN_ATTENTE,
+  STATUT_CLASSEMENT_EN_COURS,
   TAILLE_LOT_CLASSEMENT_DEFAUT,
+  estClassementEnCoursExpire,
   patchStatutApresClassement,
+  patchStatutApresExceptionInattendue,
   traiterPaquetDocumentsIndependamment,
   type DetailTraitementLot,
 } from "@/lib/documents/scan-ged-file-attente";
@@ -337,7 +340,7 @@ export async function classerDocumentsInboxDepuisStoragePaths(params: {
 }
 
 /**
- * Compte les documents en file d'attente (pagination au-delà de 1 000).
+ * Compte les documents encore à classer : en_attente + en_cours expirés.
  * Si adminUserId est fourni : uniquement ses docs + legacy (null).
  */
 export async function compterDocumentsEnAttenteClassement(
@@ -345,12 +348,19 @@ export async function compterDocumentsEnAttenteClassement(
   adminClient: SupabaseClient = createAdminClient(),
   adminUserId?: string | null,
 ): Promise<number> {
-  const lignes = await chargerToutesLesLignes<{ id: string }>(() => {
+  const lignes = await chargerToutesLesLignes<{
+    id: string;
+    statut_classement: string | null;
+    classement_started_at: string | null;
+  }>(() => {
     let requete = adminClient
       .from("documents")
-      .select("id")
+      .select("id, statut_classement, classement_started_at")
       .eq("organisation_id", organisationId)
-      .eq("statut_classement", STATUT_CLASSEMENT_EN_ATTENTE)
+      .in("statut_classement", [
+        STATUT_CLASSEMENT_EN_ATTENTE,
+        STATUT_CLASSEMENT_EN_COURS,
+      ])
       .is("majeur_id", null);
 
     if (adminUserId) {
@@ -359,7 +369,62 @@ export async function compterDocumentsEnAttenteClassement(
 
     return requete;
   });
-  return lignes.length;
+
+  return lignes.filter((ligne) => {
+    if (ligne.statut_classement === STATUT_CLASSEMENT_EN_ATTENTE) {
+      return true;
+    }
+    if (ligne.statut_classement === STATUT_CLASSEMENT_EN_COURS) {
+      return estClassementEnCoursExpire(ligne.classement_started_at);
+    }
+    return false;
+  }).length;
+}
+
+async function claimDocumentsClassementScanGed(params: {
+  adminClient: SupabaseClient;
+  organisationId: string;
+  adminUserId: string;
+  taille: number;
+  documentIds?: string[];
+}): Promise<DocumentNonClasse[]> {
+  const { data, error } = await params.adminClient.rpc(
+    "claim_documents_classement_scan_ged",
+    {
+      p_organisation_id: params.organisationId,
+      p_admin_user_id: params.adminUserId,
+      p_taille: params.taille,
+      p_document_ids:
+        params.documentIds && params.documentIds.length > 0
+          ? params.documentIds
+          : null,
+    },
+  );
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return (data ?? []) as DocumentNonClasse[];
+}
+
+async function remettreDocumentEnAttenteClassement(params: {
+  adminClient: SupabaseClient;
+  documentId: string;
+}): Promise<DocumentNonClasse | null> {
+  const { data, error } = await params.adminClient
+    .from("documents")
+    .update(patchStatutApresExceptionInattendue())
+    .eq("id", params.documentId)
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    console.error("[remettreDocumentEnAttenteClassement]", error.message);
+    return null;
+  }
+
+  return data as DocumentNonClasse | null;
 }
 
 async function classerUnDocumentEnAttente(params: {
@@ -391,7 +456,7 @@ async function classerUnDocumentEnAttente(params: {
 }
 
 /**
- * Traite un paquet de documents en_attente_classement (ou une liste explicite).
+ * Traite un paquet via claim atomique (SKIP LOCKED).
  * Limité aux documents de l'admin connecté (+ legacy null).
  */
 export async function traiterLotClassementScanGed(params: {
@@ -410,7 +475,6 @@ export async function traiterLotClassementScanGed(params: {
     Math.max(params.taille ?? TAILLE_LOT_CLASSEMENT_DEFAUT, 1),
     20,
   );
-  const filtreAdmin = filtreOrDocumentsAdmin(params.adminUserId);
 
   const majeurs = await chargerToutesLesLignes<MajeurRow>(() =>
     adminClient
@@ -420,72 +484,18 @@ export async function traiterLotClassementScanGed(params: {
       .eq("statut", "actif"),
   );
 
-  let aTraiter: DocumentNonClasse[] = [];
+  const ids =
+    params.documentIds && params.documentIds.length > 0
+      ? [...new Set(params.documentIds.filter(Boolean))]
+      : undefined;
 
-  if (params.documentIds && params.documentIds.length > 0) {
-    const ids = [...new Set(params.documentIds.filter(Boolean))];
-    const { data, error } = await adminClient
-      .from("documents")
-      .select("*")
-      .eq("organisation_id", params.organisationId)
-      .is("majeur_id", null)
-      .or(filtreAdmin)
-      .in("id", ids);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    aTraiter = (data ?? []) as DocumentNonClasse[];
-
-    // Remet en file les échecs avant retraitement
-    const aRemettre = aTraiter.filter(
-      (doc) => doc.statut_classement === STATUT_CLASSEMENT_ECHEC,
-    );
-    if (aRemettre.length > 0) {
-      await adminClient
-        .from("documents")
-        .update({
-          statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
-          erreur_classement: null,
-        })
-        .in(
-          "id",
-          aRemettre.map((doc) => doc.id),
-        );
-      aTraiter = aTraiter.map((doc) =>
-        doc.statut_classement === STATUT_CLASSEMENT_ECHEC
-          ? {
-              ...doc,
-              statut_classement: STATUT_CLASSEMENT_EN_ATTENTE,
-              erreur_classement: null,
-            }
-          : doc,
-      );
-    }
-
-    aTraiter = aTraiter.filter(
-      (doc) =>
-        doc.statut_classement === STATUT_CLASSEMENT_EN_ATTENTE ||
-        doc.statut_classement === STATUT_CLASSEMENT_ECHEC,
-    );
-  } else {
-    const { data, error } = await adminClient
-      .from("documents")
-      .select("*")
-      .eq("organisation_id", params.organisationId)
-      .eq("statut_classement", STATUT_CLASSEMENT_EN_ATTENTE)
-      .is("majeur_id", null)
-      .or(filtreAdmin)
-      .order("created_at", { ascending: true })
-      .limit(taille);
-
-    if (error) {
-      throw new Error(error.message);
-    }
-
-    aTraiter = (data ?? []) as DocumentNonClasse[];
-  }
+  const aTraiter = await claimDocumentsClassementScanGed({
+    adminClient,
+    organisationId: params.organisationId,
+    adminUserId: params.adminUserId,
+    taille,
+    documentIds: ids,
+  });
 
   const documentsMisAJour: DocumentNonClasse[] = [];
 
@@ -507,18 +517,53 @@ export async function traiterLotClassementScanGed(params: {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Erreur de classement.";
-        const echec = await marquerEchecClassement({
-          adminClient,
-          documentId: item.id,
-          message,
-        });
-        if (echec) {
-          documentsMisAJour.push(echec);
+
+        // Filet : si le marquage échec échoue, ne pas laisser en_cours.
+        try {
+          const echec = await marquerEchecClassement({
+            adminClient,
+            documentId: item.id,
+            message,
+          });
+          if (echec) {
+            documentsMisAJour.push(echec);
+          } else {
+            const remis = await remettreDocumentEnAttenteClassement({
+              adminClient,
+              documentId: item.id,
+            });
+            if (remis) {
+              documentsMisAJour.push(remis);
+            }
+          }
+        } catch {
+          const remis = await remettreDocumentEnAttenteClassement({
+            adminClient,
+            documentId: item.id,
+          });
+          if (remis) {
+            documentsMisAJour.push(remis);
+          }
         }
         throw error;
       }
     },
   );
+
+  // Documents claimés mais non aboutis (exception avant catch interne) → en_attente
+  const idsTraites = new Set(documentsMisAJour.map((doc) => doc.id));
+  for (const doc of aTraiter) {
+    if (idsTraites.has(doc.id)) {
+      continue;
+    }
+    const remis = await remettreDocumentEnAttenteClassement({
+      adminClient,
+      documentId: doc.id,
+    });
+    if (remis) {
+      documentsMisAJour.push(remis);
+    }
+  }
 
   const restant = await compterDocumentsEnAttenteClassement(
     params.organisationId,

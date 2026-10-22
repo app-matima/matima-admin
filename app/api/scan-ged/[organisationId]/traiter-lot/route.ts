@@ -17,7 +17,7 @@ interface TraiterLotBody {
 
 /**
  * POST /api/scan-ged/[organisationId]/traiter-lot
- * Traite N documents en_attente_classement (défaut 5), isolément.
+ * Claim atomique (SKIP LOCKED) puis classement IA d'un lot (défaut 5).
  * Limité aux documents de l'admin connecté (+ legacy null).
  */
 export async function POST(

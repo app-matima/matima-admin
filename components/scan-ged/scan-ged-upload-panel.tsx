@@ -5,6 +5,7 @@ import { Eye, FileUp, Loader2, Sparkles, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/shared/badge";
 import { GedDossierSelect } from "@/components/scan-ged/ged-dossier-select";
 import { isImage, isPdf } from "@/lib/documents/document-utils";
+import { formaterDateAjoutDocument } from "@/lib/documents/formater-date-ajout-document";
 import {
   NOUVEAU_DOSSIER_MANUEL,
   NOUVEAU_DOSSIER_SELECTION,
@@ -15,10 +16,12 @@ import {
   formatSegmentsCheminBreadcrumb,
 } from "@/lib/documents/ged-dossier-utils";
 import {
+  classerDocumentsRestantsScanGed,
   fetchDossiersProtege,
   fetchScanGedContext,
   proposerDossierScanGedDocument,
   reessayerClassementScanGedDocument,
+  reessayerTousEchecsClassementScanGed,
   supprimerScanGedDocument,
   uploadScanGedDocuments,
   validerScanGedDocument,
@@ -31,6 +34,8 @@ import {
   STATUT_CLASSEMENT_CLASSE,
   STATUT_CLASSEMENT_ECHEC,
   STATUT_CLASSEMENT_EN_ATTENTE,
+  STATUT_CLASSEMENT_EN_COURS,
+  documentEligibleFileClassement,
 } from "@/lib/documents/scan-ged-file-attente";
 import { MESSAGE_DOCUMENT_DEJA_CLASSE } from "@/lib/scan-ged/filtrer-documents-admin";
 import {
@@ -47,6 +52,7 @@ interface LigneDocument {
   documentId: string;
   storagePath: string;
   nom: string;
+  createdAt: string | null;
   gedDossierId: string;
   majeurId: string;
   typeDocument: string;
@@ -58,6 +64,7 @@ interface LigneDocument {
   nouveauCheminManuel?: string[];
   statutClassement: StatutClassementDocument | null;
   erreurClassement: string | null;
+  classementStartedAt: string | null;
 }
 
 interface ScanGedUploadPanelProps {
@@ -106,6 +113,7 @@ function documentVersLigne(document: DocumentNonClasse): LigneDocument {
   const statutBrut = document.statut_classement;
   const statutClassement: StatutClassementDocument | null =
     statutBrut === STATUT_CLASSEMENT_EN_ATTENTE ||
+    statutBrut === STATUT_CLASSEMENT_EN_COURS ||
     statutBrut === STATUT_CLASSEMENT_CLASSE ||
     statutBrut === STATUT_CLASSEMENT_ECHEC
       ? statutBrut
@@ -115,6 +123,8 @@ function documentVersLigne(document: DocumentNonClasse): LigneDocument {
     documentId: document.id,
     storagePath: document.storage_path,
     nom: document.nom_original,
+    createdAt: document.created_at?.trim() || null,
+    classementStartedAt: document.classement_started_at?.trim() || null,
     gedDossierId:
       document.proposition_ged_dossier_id ??
       (propositionNouveauCheminDossier ? NOUVEAU_DOSSIER_SELECTION : ""),
@@ -195,6 +205,7 @@ function DocumentPreviewModal({
   }
 
   const previewUrl = `/api/storage/sign?path=${encodeURIComponent(ligne.storagePath)}`;
+  const dateAjout = formaterDateAjoutDocument(ligne.createdAt);
 
   return (
     <div
@@ -210,13 +221,20 @@ function DocumentPreviewModal({
       />
       <div className="relative flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-card">
         <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3">
-          <h2 className="truncate text-sm font-medium text-text-strong">
-            {ligne.nom}
-          </h2>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-medium text-text-strong">
+              {ligne.nom}
+            </h2>
+            {dateAjout ? (
+              <p className="mt-0.5 truncate text-xs text-text-muted">
+                {dateAjout}
+              </p>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-2 text-text-muted transition-colors hover:bg-page hover:text-text-strong"
+            className="shrink-0 rounded-lg p-2 text-text-muted transition-colors hover:bg-page hover:text-text-strong"
             aria-label="Fermer"
           >
             <X className="h-4 w-4" />
@@ -285,6 +303,8 @@ export function ScanGedUploadPanel({
   const [reessaiDocumentId, setReessaiDocumentId] = useState<string | null>(
     null,
   );
+  const [classementBoucleEnCours, setClassementBoucleEnCours] = useState(false);
+  const arreterClassementRef = useRef(false);
 
   const assurerDossiersProtege = useCallback(
     async (majeurId: string): Promise<GedDossier[]> => {
@@ -379,7 +399,10 @@ export function ScanGedUploadPanel({
     ligne: LigneDocument,
     nouveauMajeurId: string,
   ) {
-    if (ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE) {
+    if (
+      ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE ||
+      ligne.statutClassement === STATUT_CLASSEMENT_EN_COURS
+    ) {
       return;
     }
 
@@ -421,6 +444,22 @@ export function ScanGedUploadPanel({
     }
   }
 
+  const documentsEnFileTri = lignes.filter((ligne) =>
+    documentEligibleFileClassement({
+      id: ligne.documentId,
+      statut_classement: ligne.statutClassement,
+      classement_started_at: ligne.classementStartedAt,
+    }),
+  );
+  const documentsEnEchec = lignes.filter(
+    (ligne) => ligne.statutClassement === STATUT_CLASSEMENT_ECHEC,
+  );
+  const nbEnAttenteTri = documentsEnFileTri.length;
+
+  function demanderArretClassement() {
+    arreterClassementRef.current = true;
+  }
+
   async function traiterFichiers(fichiers: FileList | File[]) {
     const liste = Array.from(fichiers).filter((fichier) => {
       const type = fichier.type;
@@ -438,6 +477,8 @@ export function ScanGedUploadPanel({
     }
 
     setImportEnCours(true);
+    setClassementBoucleEnCours(true);
+    arreterClassementRef.current = false;
     setErreur(null);
     setMessage(null);
     setProgressionClassement({ fait: 0, total: liste.length });
@@ -448,6 +489,7 @@ export function ScanGedUploadPanel({
         liste,
         {
           onProgress: (progress) => setProgressionClassement(progress),
+          devraitArreter: () => arreterClassementRef.current,
         },
       );
       await chargerDonnees();
@@ -457,11 +499,17 @@ export function ScanGedUploadPanel({
         (doc) => doc.statut_classement === STATUT_CLASSEMENT_ECHEC,
       ).length;
 
-      setMessage(
-        nbEchecs > 0
-          ? `${nb} document${nb > 1 ? "s" : ""} traité${nb > 1 ? "s" : ""} (${nbEchecs} échec${nbEchecs > 1 ? "s" : ""}).`
-          : `${nb} document${nb > 1 ? "s" : ""} importé${nb > 1 ? "s" : ""} et classifié${nb > 1 ? "s" : ""} par l'IA.`,
-      );
+      if (resultat.arrete) {
+        setMessage(
+          `Classement arrêté. ${nb} document${nb > 1 ? "s" : ""} traité${nb > 1 ? "s" : ""}.`,
+        );
+      } else {
+        setMessage(
+          nbEchecs > 0
+            ? `${nb} document${nb > 1 ? "s" : ""} traité${nb > 1 ? "s" : ""} (${nbEchecs} échec${nbEchecs > 1 ? "s" : ""}).`
+            : `${nb} document${nb > 1 ? "s" : ""} importé${nb > 1 ? "s" : ""} et classifié${nb > 1 ? "s" : ""} par l'IA.`,
+        );
+      }
 
       if (resultat.erreurs?.length) {
         setErreur(resultat.erreurs.join(" "));
@@ -474,7 +522,101 @@ export function ScanGedUploadPanel({
       );
     } finally {
       setImportEnCours(false);
+      setClassementBoucleEnCours(false);
       setProgressionClassement(null);
+      arreterClassementRef.current = false;
+    }
+  }
+
+  async function handleClasserDocumentsRestants() {
+    if (nbEnAttenteTri === 0 || classementBoucleEnCours) {
+      return;
+    }
+
+    setClassementBoucleEnCours(true);
+    arreterClassementRef.current = false;
+    setErreur(null);
+    setMessage(null);
+    setProgressionClassement({ fait: 0, total: nbEnAttenteTri });
+
+    try {
+      const resultat = await classerDocumentsRestantsScanGed(
+        organisation.organisationId,
+        {
+          totalInitial: nbEnAttenteTri,
+          onProgress: (progress) => setProgressionClassement(progress),
+          devraitArreter: () => arreterClassementRef.current,
+        },
+      );
+      await chargerDonnees();
+
+      if (resultat.arrete) {
+        setMessage(
+          `Classement arrêté. ${resultat.fait} document${resultat.fait > 1 ? "s" : ""} traité${resultat.fait > 1 ? "s" : ""}.`,
+        );
+      } else {
+        setMessage(
+          `${resultat.fait} document${resultat.fait > 1 ? "s" : ""} classé${resultat.fait > 1 ? "s" : ""}.`,
+        );
+      }
+    } catch (error) {
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de classer les documents restants.",
+      );
+      await chargerDonnees();
+    } finally {
+      setClassementBoucleEnCours(false);
+      setProgressionClassement(null);
+      arreterClassementRef.current = false;
+    }
+  }
+
+  async function handleReessayerTousEchecs() {
+    if (documentsEnEchec.length === 0 || classementBoucleEnCours) {
+      return;
+    }
+
+    const ids = documentsEnEchec.map((ligne) => ligne.documentId);
+    setClassementBoucleEnCours(true);
+    arreterClassementRef.current = false;
+    setErreur(null);
+    setMessage(null);
+    setProgressionClassement({ fait: 0, total: ids.length });
+
+    try {
+      const resultat = await reessayerTousEchecsClassementScanGed(
+        organisation.organisationId,
+        ids,
+        {
+          totalInitial: ids.length,
+          onProgress: (progress) => setProgressionClassement(progress),
+          devraitArreter: () => arreterClassementRef.current,
+        },
+      );
+      await chargerDonnees();
+
+      if (resultat.arrete) {
+        setMessage(
+          `Relance arrêtée. ${resultat.fait} document${resultat.fait > 1 ? "s" : ""} retraité${resultat.fait > 1 ? "s" : ""}.`,
+        );
+      } else {
+        setMessage(
+          `${resultat.fait} échec${resultat.fait > 1 ? "s" : ""} retraité${resultat.fait > 1 ? "s" : ""}.`,
+        );
+      }
+    } catch (error) {
+      setErreur(
+        error instanceof Error
+          ? error.message
+          : "Impossible de relancer les échecs.",
+      );
+      await chargerDonnees();
+    } finally {
+      setClassementBoucleEnCours(false);
+      setProgressionClassement(null);
+      arreterClassementRef.current = false;
     }
   }
 
@@ -704,6 +846,45 @@ export function ScanGedUploadPanel({
         </button>
       </div>
 
+      {!chargement && (nbEnAttenteTri > 0 || documentsEnEchec.length > 0) && (
+        <div className="flex flex-col gap-3 rounded-xl border border-[#FDE68A] bg-[#FFFBEB] p-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm font-medium text-[#92400E]">
+            {nbEnAttenteTri > 0
+              ? `${nbEnAttenteTri} document${nbEnAttenteTri > 1 ? "s" : ""} en attente de tri`
+              : `${documentsEnEchec.length} échec${documentsEnEchec.length > 1 ? "s" : ""} de classement`}
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {nbEnAttenteTri > 0 && (
+              <button
+                type="button"
+                onClick={() => void handleClasserDocumentsRestants()}
+                disabled={classementBoucleEnCours || validationEnCours}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {classementBoucleEnCours && !importEnCours ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Classement…
+                  </>
+                ) : (
+                  "Classer les documents restants"
+                )}
+              </button>
+            )}
+            {documentsEnEchec.length > 0 && (
+              <button
+                type="button"
+                onClick={() => void handleReessayerTousEchecs()}
+                disabled={classementBoucleEnCours || validationEnCours}
+                className="inline-flex items-center justify-center rounded-lg border border-[#FDE68A] bg-white px-4 py-2 text-sm font-medium text-[#B45309] transition-colors hover:bg-[#FEF3C7] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Réessayer tous les échecs
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div
         onDragOver={(event) => {
           event.preventDefault();
@@ -748,7 +929,7 @@ export function ScanGedUploadPanel({
         </p>
         <button
           type="button"
-          disabled={importEnCours}
+          disabled={importEnCours || classementBoucleEnCours}
           onClick={() => inputRef.current?.click()}
           className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
@@ -765,16 +946,24 @@ export function ScanGedUploadPanel({
 
       {progressionClassement && (
         <div className="rounded-xl border border-border bg-card p-4">
-          <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm font-medium text-text-strong">
               Classement IA en cours…
             </p>
-            <p className="text-sm text-text-muted">
-              {progressionClassement.fait}/{progressionClassement.total}{" "}
-              document
-              {progressionClassement.total > 1 ? "s" : ""} classé
-              {progressionClassement.total > 1 ? "s" : ""}
-            </p>
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-text-muted">
+                {progressionClassement.fait}/{progressionClassement.total}
+              </p>
+              {classementBoucleEnCours && (
+                <button
+                  type="button"
+                  onClick={demanderArretClassement}
+                  className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-text-strong transition-colors hover:bg-page"
+                >
+                  Arrêter
+                </button>
+              )}
+            </div>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-page">
             <div
@@ -853,6 +1042,7 @@ export function ScanGedUploadPanel({
             disabled={
               validationEnCours ||
               importEnCours ||
+              classementBoucleEnCours ||
               suppressionDocumentId !== null
             }
             className="inline-flex w-full items-center justify-center rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
@@ -920,7 +1110,9 @@ export function ScanGedUploadPanel({
               ligne.statutClassement === STATUT_CLASSEMENT_ECHEC;
             const estEnAttente =
               ligne.statutClassement === STATUT_CLASSEMENT_EN_ATTENTE;
-            const estModifiable = !estEnAttente;
+            const estEnCours =
+              ligne.statutClassement === STATUT_CLASSEMENT_EN_COURS;
+            const estModifiable = !estEnAttente && !estEnCours;
             const messageAvertissement = ligne.erreurClassement;
 
             return (
@@ -930,7 +1122,7 @@ export function ScanGedUploadPanel({
                   "rounded-xl border bg-card p-4 sm:p-5",
                   estEchec
                     ? "border-[#FECACA]"
-                    : estEnAttente
+                    : estEnAttente || estEnCours
                       ? "border-[#FDE68A]"
                       : "border-border",
                 )}
@@ -938,6 +1130,9 @@ export function ScanGedUploadPanel({
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   {estEnAttente && (
                     <Badge variant="warning">En attente de classement</Badge>
+                  )}
+                  {estEnCours && (
+                    <Badge variant="warning">Classement en cours</Badge>
                   )}
                   {estEchec && (
                     <Badge variant="danger">Échec de classement</Badge>

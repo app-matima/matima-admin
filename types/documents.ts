@@ -18,6 +18,7 @@ export interface GedDossier {
 
 export type StatutClassementDocument =
   | "en_attente_classement"
+  | "classement_en_cours"
   | "classe"
   | "echec_classement";
 
@@ -44,6 +45,8 @@ export interface Document {
   proposition_nom?: string | null;
   statut_classement?: StatutClassementDocument | null;
   erreur_classement?: string | null;
+  /** Début du traitement IA lorsque statut = classement_en_cours. */
+  classement_started_at?: string | null;
   /** Admin Scan GED qui a uploadé (null = matima-app ou legacy). */
   scan_admin_user_id?: string | null;
   created_at?: string;
