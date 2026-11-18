@@ -4,6 +4,7 @@ import {
   type DossierPourProposition,
 } from "@/lib/claude/proposer-document-non-classe";
 import {
+  buildInboxOriginalStoragePath,
   buildInboxStoragePath,
   buildStoragePath,
   sanitizeNomFichier,
@@ -649,9 +650,14 @@ async function preparerEntreesDepuisStoragePath(
     ];
   }
 
-  const segments = await decouperPdfAuxPagesBlanches(telecharge.bytes, nom);
+  const decoupage = await decouperPdfAuxPagesBlanches(telecharge.bytes, nom);
+  const segments = decoupage.segments;
 
-  if (segments.length <= 1) {
+  if (decoupage.anomalie) {
+    console.warn("[scan-ged] anomalie découpage — PDF intact:", nom, decoupage.anomalie);
+  }
+
+  if (segments.length <= 1 || !decoupage.archiveOriginaleRequise) {
     const unique = segments[0];
     return [
       {
@@ -686,7 +692,31 @@ async function preparerEntreesDepuisStoragePath(
     });
   }
 
-  await adminClient.storage.from(BUCKET).remove([storagePath]);
+  // Tous les segments sont écrits (upload sans erreur) → archiver puis retirer l'original inbox
+  const cheminArchive = buildInboxOriginalStoragePath(organisationId, nom);
+  const { error: archiveError } = await adminClient.storage
+    .from(BUCKET)
+    .upload(cheminArchive, telecharge.bytes, {
+      contentType: "application/pdf",
+      upsert: false,
+    });
+
+  if (archiveError) {
+    console.error(
+      "[scan-ged] Échec archive original (segments déjà écrits) :",
+      archiveError.message
+    );
+  } else {
+    const { error: removeError } = await adminClient.storage
+      .from(BUCKET)
+      .remove([storagePath]);
+    if (removeError) {
+      console.error(
+        "[scan-ged] Échec suppression original inbox après archive :",
+        removeError.message
+      );
+    }
+  }
 
   return entrees;
 }

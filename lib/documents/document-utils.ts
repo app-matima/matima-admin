@@ -38,6 +38,36 @@ export function buildInboxStoragePath(
   return `${organisationId}/inbox/${Date.now()}_${unique}_${nomSecurise}`;
 }
 
+/**
+ * Archive du PDF original après découpage Scan GED (hors table documents).
+ */
+export function buildInboxOriginalStoragePath(
+  organisationId: string,
+  nomOriginal: string,
+): string {
+  const nomSecurise = sanitizeNomFichier(nomOriginal);
+  const identifiant =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${organisationId}/inbox/originaux/${identifiant}_${nomSecurise}`;
+}
+
+/**
+ * Archive du PDF original après découpage Scan GED (hors table documents).
+ */
+export function buildInboxOriginalStoragePath(
+  organisationId: string,
+  nomOriginal: string,
+): string {
+  const nomSecurise = sanitizeNomFichier(nomOriginal);
+  const identifiant =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return `${organisationId}/inbox/originaux/${identifiant}_${nomSecurise}`;
+}
+
 export function buildStoragePath(
   organisationId: string,
   majeurId: string,

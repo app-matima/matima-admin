@@ -1,16 +1,11 @@
 /**
- * Découpe un PDF scanné en segments séparés par des feuilles rouges.
+ * Découpe un PDF scanné aux feuilles séparatrices rouges.
  *
- * - Page quasi blanche → retirée, sans démarrer un nouveau document
- * - Page majoritairement rouge → retirée + nouvelle séparation
- * - Autre (contenu) → conservée dans le document en cours
+ * Séparateur (jeté) : ≥ 92 % pixels rouges ET ≤ 3 % pixels non rouges.
+ * Douteux (conservé) : rouge ≥ 85 % et non rouge ≤ 8 %.
+ * Blanc / contenu / douteux : toujours conservés.
  *
- * Classification couleur via extraction des images XObject :
- * - JPEG (DCTDecode) → coefficients DC uniquement (jp3g échelle 1/8)
- * - FlateDecode → pixels bruts
- * Sans rendu canvas natif — compatible serverless Vercel.
- *
- * Les seuils ci-dessous sont volontairement exposés pour affinage après tests réels.
+ * Classification via images XObject (JPEG plein via jpeg-js, Flate RGBA).
  */
 
 import {
@@ -25,39 +20,42 @@ import {
   decodePDFRawStream,
   type PDFObject,
 } from "pdf-lib";
-import { moyenneRgbDepuisJpegDc } from "@/lib/documents/jpeg-dc-moyenne";
+import jpegJs from "jpeg-js";
 
 // ---------------------------------------------------------------------------
-// Seuils / tolérances (ajustables)
+// Seuils
 // ---------------------------------------------------------------------------
 
-/** Chaque canal R, G, B doit être ≥ ce seuil pour considérer la page comme blanche. */
 export const SEUIL_BLANC_RGB_MIN = 245;
 
-/**
- * Rouge : canal R minimum pour être candidat « feuille rouge ».
- * Couvre les rouges papier un peu ternes / scannés.
- */
-export const SEUIL_ROUGE_R_MIN = 140;
+export const SEUIL_ROUGE_PIXEL_R_MIN = 140;
+export const SEUIL_ROUGE_PIXEL_GB_MAX = 120;
+export const SEUIL_ROUGE_PIXEL_DOMINANCE = 35;
 
-/** Canaux G et B maximum pour un rouge « pur » (tolérance papier). */
-export const SEUIL_ROUGE_GB_MAX = 120;
+export const SEUIL_SEPARATEUR_PCT_ROUGE_MIN = 0.92;
+export const SEUIL_SEPARATEUR_PCT_NON_ROUGE_MAX = 0.03;
 
-/**
- * Dominance minimale du rouge : R − max(G, B) ≥ ce seuil.
- * Évite de classer un beige / orange pâle comme séparateur.
- */
-export const SEUIL_ROUGE_DOMINANCE = 35;
+export const SEUIL_DOUTEUX_PCT_ROUGE_MIN = 0.85;
+export const SEUIL_DOUTEUX_PCT_NON_ROUGE_MAX = 0.08;
 
-/** N'échantillonner qu'un pixel sur N pour accélérer la moyenne RGB. */
-export const PAS_ECHANTILLONNAGE_PIXELS = 4;
+/** @deprecated alias */
+export const SEUIL_ROUGE_R_MIN = SEUIL_ROUGE_PIXEL_R_MIN;
+export const SEUIL_ROUGE_GB_MAX = SEUIL_ROUGE_PIXEL_GB_MAX;
+export const SEUIL_ROUGE_DOMINANCE = SEUIL_ROUGE_PIXEL_DOMINANCE;
 
-/** Profondeur max de récursion Form XObject (évite les boucles PDF malformés). */
+export const PAS_ECHANTILLONNAGE_PIXELS = 1;
+
+export const MESSAGE_ANOMALIE_DECOUPAGE_PDF =
+  "Découpage incohérent : le document a été conservé entier.";
+
+export const MESSAGE_ANOMALIE_TROP_DE_SEPARATEURS =
+  "Trop de pages seraient retirées (> 50 %) : le document a été conservé entier.";
+
 const PROFONDEUR_MAX_FORM_XOBJECT = 8;
 
 // ---------------------------------------------------------------------------
 
-export type TypePagePdf = "blanc" | "rouge" | "contenu";
+export type TypePagePdf = "blanc" | "rouge" | "contenu" | "douteux";
 
 export interface CouleurMoyenneRgb {
   r: number;
@@ -70,6 +68,32 @@ export interface SegmentPdf {
   nom: string;
 }
 
+export interface DiagnosticPagePdf {
+  numero: number;
+  type: TypePagePdf;
+  moyenne: CouleurMoyenneRgb;
+  proportionRouge: number;
+  proportionNonRouge: number;
+  renduOk: boolean;
+  message?: string;
+}
+
+export interface ResultatDecoupagePdf {
+  segments: SegmentPdf[];
+  anomalie: string | null;
+  archiveOriginaleRequise: boolean;
+  diagnostics: DiagnosticPagePdf[];
+  pagesSepareurs: number[];
+  pagesDouteuses: number[];
+}
+
+export interface AnalysePixelsPage {
+  moyenne: CouleurMoyenneRgb;
+  proportionRouge: number;
+  proportionNonRouge: number;
+  type: TypePagePdf;
+}
+
 interface ImageXObjectCandidate {
   width: number;
   height: number;
@@ -79,77 +103,129 @@ interface ImageXObjectCandidate {
   stream: PDFRawStream;
 }
 
-/**
- * Classe une couleur moyenne dominante en blanc / rouge / contenu.
- */
-export function classifierCouleurMoyenne(
-  couleur: CouleurMoyenneRgb
-): TypePagePdf {
-  const { r, g, b } = couleur;
-
-  if (
-    r >= SEUIL_BLANC_RGB_MIN &&
-    g >= SEUIL_BLANC_RGB_MIN &&
-    b >= SEUIL_BLANC_RGB_MIN
-  ) {
-    return "blanc";
-  }
-
+export function estPixelRougeSeparateur(
+  r: number,
+  g: number,
+  b: number
+): boolean {
   const dominanceRouge = r - Math.max(g, b);
+  return (
+    r >= SEUIL_ROUGE_PIXEL_R_MIN &&
+    g <= SEUIL_ROUGE_PIXEL_GB_MAX &&
+    b <= SEUIL_ROUGE_PIXEL_GB_MAX &&
+    dominanceRouge >= SEUIL_ROUGE_PIXEL_DOMINANCE
+  );
+}
+
+export function classifierDepuisProportions(params: {
+  proportionRouge: number;
+  proportionNonRouge: number;
+  moyenne: CouleurMoyenneRgb;
+}): TypePagePdf {
+  const { proportionRouge, proportionNonRouge, moyenne } = params;
+
   if (
-    r >= SEUIL_ROUGE_R_MIN &&
-    g <= SEUIL_ROUGE_GB_MAX &&
-    b <= SEUIL_ROUGE_GB_MAX &&
-    dominanceRouge >= SEUIL_ROUGE_DOMINANCE
+    proportionRouge >= SEUIL_SEPARATEUR_PCT_ROUGE_MIN &&
+    proportionNonRouge <= SEUIL_SEPARATEUR_PCT_NON_ROUGE_MAX
   ) {
     return "rouge";
+  }
+
+  if (
+    proportionRouge >= SEUIL_DOUTEUX_PCT_ROUGE_MIN &&
+    proportionNonRouge <= SEUIL_DOUTEUX_PCT_NON_ROUGE_MAX
+  ) {
+    return "douteux";
+  }
+
+  if (
+    moyenne.r >= SEUIL_BLANC_RGB_MIN &&
+    moyenne.g >= SEUIL_BLANC_RGB_MIN &&
+    moyenne.b >= SEUIL_BLANC_RGB_MIN
+  ) {
+    return "blanc";
   }
 
   return "contenu";
 }
 
-/**
- * Moyenne RGB à partir d'un buffer ImageData (RGBA).
- * Ignore les pixels totalement transparents.
- */
-export function moyenneRgbDepuisPixels(
-  data: Uint8ClampedArray | Uint8Array,
-  pas = PAS_ECHANTILLONNAGE_PIXELS
-): CouleurMoyenneRgb {
-  const step = Math.max(1, Math.floor(pas));
+export function analyserPixelsPage(
+  data: Uint8ClampedArray | Uint8Array
+): AnalysePixelsPage {
   let sommeR = 0;
   let sommeG = 0;
   let sommeB = 0;
   let compte = 0;
+  let compteRouge = 0;
 
-  for (let i = 0; i + 3 < data.length; i += 4 * step) {
+  for (let i = 0; i + 3 < data.length; i += 4) {
     const alpha = data[i + 3] ?? 255;
     if (alpha < 8) {
       continue;
     }
-    sommeR += data[i] ?? 0;
-    sommeG += data[i + 1] ?? 0;
-    sommeB += data[i + 2] ?? 0;
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    sommeR += r;
+    sommeG += g;
+    sommeB += b;
     compte += 1;
+    if (estPixelRougeSeparateur(r, g, b)) {
+      compteRouge += 1;
+    }
   }
 
   if (compte === 0) {
-    // Aucun pixel opaque → assimilé à blanc (page vide)
-    return { r: 255, g: 255, b: 255 };
+    const moyenne = { r: 255, g: 255, b: 255 };
+    return {
+      moyenne,
+      proportionRouge: 0,
+      proportionNonRouge: 1,
+      type: "blanc",
+    };
   }
 
-  return {
+  const moyenne = {
     r: sommeR / compte,
     g: sommeG / compte,
     b: sommeB / compte,
   };
+  const proportionRouge = compteRouge / compte;
+  const proportionNonRouge = (compte - compteRouge) / compte;
+  return {
+    moyenne,
+    proportionRouge,
+    proportionNonRouge,
+    type: classifierDepuisProportions({
+      proportionRouge,
+      proportionNonRouge,
+      moyenne,
+    }),
+  };
+}
+
+/** Compat ancienne API : sans proportions → jamais séparateur strict. */
+export function classifierCouleurMoyenne(
+  couleur: CouleurMoyenneRgb
+): TypePagePdf {
+  return classifierDepuisProportions({
+    proportionRouge: 0,
+    proportionNonRouge: 1,
+    moyenne: couleur,
+  });
+}
+
+export function moyenneRgbDepuisPixels(
+  data: Uint8ClampedArray | Uint8Array,
+  _pas = PAS_ECHANTILLONNAGE_PIXELS
+): CouleurMoyenneRgb {
+  return analyserPixelsPage(data).moyenne;
 }
 
 /**
- * Construit les segments de pages à conserver (listes d'indices).
- * - blanc : ignoré (pas de coupure)
- * - rouge : coupure + page ignorée
- * - contenu : ajouté au segment courant
+ * Segments à conserver.
+ * - rouge : coupe + page ignorée
+ * - blanc / contenu / douteux : conservés
  */
 export function detecterSegmentsParTypes(
   types: readonly TypePagePdf[]
@@ -158,20 +234,13 @@ export function detecterSegmentsParTypes(
   let courant: number[] = [];
 
   for (let index = 0; index < types.length; index += 1) {
-    const type = types[index];
-
-    if (type === "rouge") {
+    if (types[index] === "rouge") {
       if (courant.length > 0) {
         segments.push(courant);
         courant = [];
       }
       continue;
     }
-
-    if (type === "blanc") {
-      continue;
-    }
-
     courant.push(index);
   }
 
@@ -180,6 +249,27 @@ export function detecterSegmentsParTypes(
   }
 
   return segments;
+}
+
+export function verifierIntegriteDecoupage(params: {
+  nombrePagesOrigine: number;
+  segments: readonly (readonly number[])[];
+  types: readonly TypePagePdf[];
+}): boolean {
+  const pagesSegments = params.segments.reduce(
+    (total, segment) => total + segment.length,
+    0
+  );
+  const pagesRouges = params.types.filter((type) => type === "rouge").length;
+  return pagesSegments + pagesRouges === params.nombrePagesOrigine;
+}
+
+export function tropDePagesSepareurs(types: readonly TypePagePdf[]): boolean {
+  if (types.length === 0) {
+    return false;
+  }
+  const nbRouge = types.filter((type) => type === "rouge").length;
+  return nbRouge / types.length > 0.5;
 }
 
 function nomSegment(nomOriginal: string, index: number, total: number): string {
@@ -485,15 +575,27 @@ function defiltrerPredictorsPng(
   return output;
 }
 
-function decoderJpegEnMoyenne(
+function decoderJpegEnRgba(
   candidate: ImageXObjectCandidate
-): Promise<CouleurMoyenneRgb | null> {
-  // CMYK JPEG non supporté de façon fiable en JS pur → contenu
+): Uint8Array | null {
   if (candidate.colorSpace === "DeviceCMYK") {
-    return Promise.resolve(null);
+    return null;
   }
 
-  return moyenneRgbDepuisJpegDc(candidate.stream.contents);
+  try {
+    const decoded = jpegJs.decode(Buffer.from(candidate.stream.contents), {
+      useTArray: true,
+      formatAsRGBA: true,
+    });
+    if (!decoded.data || decoded.data.length === 0) {
+      return null;
+    }
+    return decoded.data instanceof Uint8Array
+      ? decoded.data
+      : new Uint8Array(decoded.data);
+  } catch {
+    return null;
+  }
 }
 
 function decoderFlateEnRgba(
@@ -552,80 +654,108 @@ function decoderFlateEnRgba(
 }
 
 /**
- * Couleur moyenne de l'image dominante d'une page.
- * JPEG → DC only (1/8) ; Flate → pixels bruts.
+ * Pixels RGBA de l'image dominante.
+ * JPEG → jpeg-js plein ; Flate → pixels bruts.
  * null → le caller traite en « contenu ».
  */
-async function couleurMoyenneDepuisImage(
+function pixelsDepuisImage(
   candidate: ImageXObjectCandidate
-): Promise<CouleurMoyenneRgb | null> {
+): Uint8Array | null {
   const filters = candidate.filters;
 
   if (filters.includes("DCTDecode") || filters.includes("DCT")) {
-    return decoderJpegEnMoyenne(candidate);
+    return decoderJpegEnRgba(candidate);
   }
 
   if (
     filters.length === 0 ||
     (filters.length === 1 && filters[0] === "FlateDecode")
   ) {
-    const rgba = decoderFlateEnRgba(candidate);
-    if (!rgba) {
-      return null;
-    }
-    return moyenneRgbDepuisPixels(rgba);
+    return decoderFlateEnRgba(candidate);
   }
 
-  // JPXDecode, CCITTFaxDecode, JBIG2, filtres composés non gérés → contenu
   return null;
 }
 
 async function classifierUnePage(
   page: PDFPage,
   numero: number
-): Promise<TypePagePdf> {
+): Promise<DiagnosticPagePdf> {
   try {
     const images = imagesDeLaPage(page);
     const dominante = choisirImageDominante(images);
 
     if (!dominante) {
-      console.warn(
-        "[split-pdf] page sans image XObject — contenu:",
-        numero
-      );
-      return "contenu";
+      console.warn("[split-pdf] page sans image XObject — contenu:", numero);
+      return {
+        numero,
+        type: "contenu",
+        moyenne: { r: 0, g: 0, b: 0 },
+        proportionRouge: 0,
+        proportionNonRouge: 1,
+        renduOk: false,
+        message: "sans image XObject",
+      };
     }
 
-    const moyenne = await couleurMoyenneDepuisImage(dominante);
-    if (!moyenne) {
+    const rgba = pixelsDepuisImage(dominante);
+    if (!rgba) {
       console.warn(
         "[split-pdf] page image non décodable — contenu:",
         numero,
         dominante.filters.join("|") || "none",
         dominante.colorSpace ?? "?"
       );
-      return "contenu";
+      return {
+        numero,
+        type: "contenu",
+        moyenne: { r: 0, g: 0, b: 0 },
+        proportionRouge: 0,
+        proportionNonRouge: 1,
+        renduOk: false,
+        message: "image non décodable",
+      };
     }
 
-    const type = classifierCouleurMoyenne(moyenne);
-
+    const analyse = analyserPixelsPage(rgba);
     console.log(
-      "[split-pdf] page classée:",
+      "[split-pdf] page",
       numero,
-      moyenne.r.toFixed(1),
-      moyenne.g.toFixed(1),
-      moyenne.b.toFixed(1),
-      type
+      "type=",
+      analyse.type,
+      "rouge%=",
+      (analyse.proportionRouge * 100).toFixed(1),
+      "nonRouge%=",
+      (analyse.proportionNonRouge * 100).toFixed(1),
+      "rgb=",
+      analyse.moyenne.r.toFixed(1),
+      analyse.moyenne.g.toFixed(1),
+      analyse.moyenne.b.toFixed(1)
     );
 
-    return type;
+    return {
+      numero,
+      type: analyse.type,
+      moyenne: analyse.moyenne,
+      proportionRouge: analyse.proportionRouge,
+      proportionNonRouge: analyse.proportionNonRouge,
+      renduOk: true,
+    };
   } catch (error) {
     console.warn(
       "[split-pdf] page erreur classification — contenu:",
       numero,
       error instanceof Error ? error.message : error
     );
-    return "contenu";
+    return {
+      numero,
+      type: "contenu",
+      moyenne: { r: 0, g: 0, b: 0 },
+      proportionRouge: 0,
+      proportionNonRouge: 1,
+      renduOk: false,
+      message: error instanceof Error ? error.message : "erreur",
+    };
   }
 }
 
@@ -635,43 +765,68 @@ async function classifierUnePage(
  */
 export async function classifierPagesParImages(
   pdfBytes: Uint8Array
-): Promise<TypePagePdf[]> {
+): Promise<DiagnosticPagePdf[]> {
   const doc = await PDFDocument.load(pdfBytes, {
     ignoreEncryption: true,
     updateMetadata: false,
   });
   const pages = doc.getPages();
-  const types: TypePagePdf[] = [];
+  const diagnostics: DiagnosticPagePdf[] = [];
 
   for (let index = 0; index < pages.length; index += 1) {
-    types.push(await classifierUnePage(pages[index]!, index + 1));
+    diagnostics.push(await classifierUnePage(pages[index]!, index + 1));
   }
 
-  const nbBlanc = types.filter((t) => t === "blanc").length;
-  const nbRouge = types.filter((t) => t === "rouge").length;
-  const nbContenu = types.filter((t) => t === "contenu").length;
+  const types = diagnostics.map((d) => d.type);
   console.log(
     "[split-pdf] résumé pages:",
     pages.length,
     "blanc=",
-    nbBlanc,
+    types.filter((t) => t === "blanc").length,
     "rouge=",
-    nbRouge,
+    types.filter((t) => t === "rouge").length,
+    "douteux=",
+    types.filter((t) => t === "douteux").length,
     "contenu=",
-    nbContenu
+    types.filter((t) => t === "contenu").length
   );
 
-  return types;
+  return diagnostics;
+}
+
+function pagesParType(
+  diagnostics: readonly DiagnosticPagePdf[],
+  type: TypePagePdf
+): number[] {
+  return diagnostics
+    .filter((page) => page.type === type)
+    .map((page) => page.numero);
+}
+
+function resultatOriginalIntact(
+  pdfBytes: Uint8Array,
+  nomOriginal: string,
+  diagnostics: DiagnosticPagePdf[],
+  anomalie: string | null = null
+): ResultatDecoupagePdf {
+  return {
+    segments: [{ bytes: pdfBytes, nom: nomOriginal }],
+    anomalie,
+    archiveOriginaleRequise: false,
+    diagnostics,
+    pagesSepareurs: pagesParType(diagnostics, "rouge"),
+    pagesDouteuses: pagesParType(diagnostics, "douteux"),
+  };
 }
 
 /**
- * Découpe un PDF aux feuilles séparatrices rouges.
- * Les pages blanches sont retirées sans créer de coupure.
+ * Découpe un PDF aux feuilles séparatrices rouges strictes.
+ * Blanc / douteux / contenu toujours conservés.
  */
 export async function decouperPdfAuxPagesBlanches(
   pdfBytes: Uint8Array,
   nomOriginal: string
-): Promise<SegmentPdf[]> {
+): Promise<ResultatDecoupagePdf> {
   const source = await PDFDocument.load(pdfBytes, {
     ignoreEncryption: true,
     updateMetadata: false,
@@ -679,39 +834,66 @@ export async function decouperPdfAuxPagesBlanches(
   const nombrePages = source.getPageCount();
 
   if (nombrePages === 0) {
-    return [{ bytes: pdfBytes, nom: nomOriginal }];
+    return resultatOriginalIntact(pdfBytes, nomOriginal, []);
   }
 
-  let types: TypePagePdf[];
+  let diagnostics: DiagnosticPagePdf[];
   try {
-    types = await classifierPagesParImages(pdfBytes);
+    diagnostics = await classifierPagesParImages(pdfBytes);
   } catch (error) {
     console.error(
       "[split-pdf] Échec de la classification — conservation du PDF intact.",
       error
     );
-    return [{ bytes: pdfBytes, nom: nomOriginal }];
+    return resultatOriginalIntact(pdfBytes, nomOriginal, []);
   }
+
+  const types = diagnostics.map((d) => d.type);
 
   if (types.length !== nombrePages) {
     console.error(
       "[split-pdf] Nombre de pages classifiées incohérent — PDF intact."
     );
-    return [{ bytes: pdfBytes, nom: nomOriginal }];
+    return resultatOriginalIntact(
+      pdfBytes,
+      nomOriginal,
+      diagnostics,
+      MESSAGE_ANOMALIE_DECOUPAGE_PDF
+    );
+  }
+
+  if (tropDePagesSepareurs(types)) {
+    return resultatOriginalIntact(
+      pdfBytes,
+      nomOriginal,
+      diagnostics,
+      MESSAGE_ANOMALIE_TROP_DE_SEPARATEURS
+    );
+  }
+
+  if (!types.some((type) => type === "rouge")) {
+    return resultatOriginalIntact(pdfBytes, nomOriginal, diagnostics);
   }
 
   const segments = detecterSegmentsParTypes(types);
 
-  if (segments.length === 0) {
-    // Uniquement blanc / rouge : rien à conserver → PDF original intact
-    // (évite de renvoyer une liste vide à l'upload).
-    return [{ bytes: pdfBytes, nom: nomOriginal }];
+  if (
+    !verifierIntegriteDecoupage({
+      nombrePagesOrigine: nombrePages,
+      segments,
+      types,
+    })
+  ) {
+    return resultatOriginalIntact(
+      pdfBytes,
+      nomOriginal,
+      diagnostics,
+      MESSAGE_ANOMALIE_DECOUPAGE_PDF
+    );
   }
 
-  // Aucune page à retirer ni coupure → même PDF
-  const toutesContenu = types.every((type) => type === "contenu");
-  if (toutesContenu && segments.length === 1) {
-    return [{ bytes: pdfBytes, nom: nomOriginal }];
+  if (segments.length === 0) {
+    return resultatOriginalIntact(pdfBytes, nomOriginal, diagnostics);
   }
 
   const resultats: SegmentPdf[] = [];
@@ -737,9 +919,21 @@ export async function decouperPdfAuxPagesBlanches(
         segments.length,
         error
       );
-      return [{ bytes: pdfBytes, nom: nomOriginal }];
+      return resultatOriginalIntact(
+        pdfBytes,
+        nomOriginal,
+        diagnostics,
+        MESSAGE_ANOMALIE_DECOUPAGE_PDF
+      );
     }
   }
 
-  return resultats;
+  return {
+    segments: resultats,
+    anomalie: null,
+    archiveOriginaleRequise: resultats.length > 1,
+    diagnostics,
+    pagesSepareurs: pagesParType(diagnostics, "rouge"),
+    pagesDouteuses: pagesParType(diagnostics, "douteux"),
+  };
 }
